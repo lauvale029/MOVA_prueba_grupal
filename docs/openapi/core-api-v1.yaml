@@ -1,0 +1,358 @@
+openapi: 3.0.3
+
+info:
+  title: MOVA Core API
+  version: "1.0.0"
+  description: |
+    API de Payment Intents. Escrita **desde el lado del consumidor**: el
+    `reconciliation-worker` la usa para listar intents abiertos y solicitar su
+    expiración.
+
+    Dos advertencias antes de programar contra esto:
+
+    - `PATCH /payment-intents/{id}/status` está marcado con `x-status: pendiente`.
+      **Todavía no existe** en `core-api`. Está especificado aquí porque el worker
+      ya lo consume y porque así queda escrito el contrato exacto que hace falta
+      implementar. Ver README → Pendientes.
+    - La creación devuelve el intent en `UNDER_REVIEW`, no resuelto. La decisión
+      de riesgo llega después, de forma asíncrona (ADR-0001). Quien integre debe
+      consultar el recurso o su historial, no asumir que la respuesta del `POST`
+      es definitiva.
+
+servers:
+  - url: http://localhost:8095
+    description: local (PORT del .env)
+  - url: http://core-api:8080
+    description: dentro de la red del compose
+
+tags:
+  - name: auth
+  - name: payment-intents
+  - name: operación
+
+security:
+  - bearerAuth: []
+
+paths:
+  /readiness:
+    get:
+      tags: [operación]
+      summary: Confirma que Kafka es alcanzable
+      security: []
+      responses:
+        "200":
+          description: Listo para recibir tráfico
+        "503":
+          description: Kafka no responde
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Autentica con la credencial de servicio y devuelve un JWT
+      description: |
+        No hay tabla de usuarios: es la única credencial de servicio del
+        proyecto, configurada por entorno. El `reconciliation-worker` la usa
+        para obtener su token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+            example: { username: "svc", password: "svc" }
+      responses:
+        "200":
+          description: Token emitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/payment-intents:
+    post:
+      tags: [payment-intents]
+      summary: Crea un Payment Intent
+      description: |
+        Exige la cabecera `Idempotency-Key`. Reenviar la misma llave devuelve el
+        intent original en vez de crear uno nuevo: la garantía final es una
+        restricción única en PostgreSQL, no el lock de Redis (ADR-0002).
+
+        El intent nace en `PENDING` y pasa a `UNDER_REVIEW` de forma atómica con
+        su entrada de historial, antes de publicar el evento de riesgo.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+          description: Llave de reintento seguro, elegida por el cliente
+        - name: X-Correlation-Id
+          in: header
+          required: false
+          schema: { type: string, format: uuid }
+          description: Si no se envía, `core-api` genera uno
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [merchant_id, external_reference, amount_minor, currency, channel]
+              properties:
+                merchant_id: { type: string, format: uuid }
+                external_reference: { type: string }
+                amount_minor:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  description: Unidad mínima. Nunca decimal ni flotante
+                currency: { type: string, enum: [COP] }
+                channel: { $ref: "#/components/schemas/Channel" }
+            example:
+              merchant_id: "22222222-2222-2222-2222-222222222222"
+              external_reference: "ORDER-1001"
+              amount_minor: 150000
+              currency: "COP"
+              channel: "QR"
+      responses:
+        "201":
+          description: Creado, o el intent original si la llave se repitió
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+
+    get:
+      tags: [payment-intents]
+      summary: Lista Payment Intents con filtros y paginación
+      description: Es la consulta que usa el `reconciliation-worker` para detectar vencidos.
+      parameters:
+        - name: merchant_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/Status" }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 100 }
+      responses:
+        "200":
+          description: Página de resultados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/PaymentIntent" }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer, format: int64 }
+
+  /api/v1/payment-intents/{payment_intent_id}:
+    get:
+      tags: [payment-intents]
+      summary: Consulta un Payment Intent
+      parameters:
+        - $ref: "#/components/parameters/PaymentIntentId"
+      responses:
+        "200":
+          description: El intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/payment-intents/{payment_intent_id}/history:
+    get:
+      tags: [payment-intents]
+      summary: Historial inmutable de cambios de estado
+      description: |
+        Cada entrada lleva los cuatro campos que exige el enunciado: actor
+        (`changed_by`), motivo (`reason`), correlación (`correlation_id`) y
+        fecha (`created_at`, que pone la base de datos).
+      parameters:
+        - $ref: "#/components/parameters/PaymentIntentId"
+      responses:
+        "200":
+          description: Entradas en orden cronológico
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoryEntry" }
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/payment-intents/{payment_intent_id}/status:
+    patch:
+      tags: [payment-intents]
+      summary: "[PENDIENTE] Solicita una transición de estado"
+      x-status: pendiente
+      x-owner: Valentina
+      x-consumer: reconciliation-worker
+      description: |
+        **Este endpoint todavía no existe en `core-api`.** Está especificado aquí
+        porque el `reconciliation-worker` ya lo consume y porque así queda escrito
+        el contrato exacto que hace falta implementar.
+
+        Las dos transiciones que necesita el worker ya existen en la tabla del
+        dominio (`PENDING → EXPIRED` y `UNDER_REVIEW → EXPIRED`), así que falta
+        solo el handler.
+
+        El worker distingue el `404` de una caída a propósito: corta el ciclo y
+        sale con código `2` en vez de reintentar algo que no va a aparecer.
+      parameters:
+        - $ref: "#/components/parameters/PaymentIntentId"
+        - name: X-Correlation-Id
+          in: header
+          required: false
+          schema: { type: string, format: uuid }
+          description: El worker propaga el del intent, para no romper la traza
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/Status" }
+                reason: { type: string }
+            example:
+              status: "EXPIRED"
+              reason: "vencido sin resolverse dentro de la ventana"
+      responses:
+        "200":
+          description: Transición aplicada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentIntent" }
+        "404":
+          description: El intent no existe — **o el endpoint no está implementado**
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Ya estaba en ese estado. El worker lo cuenta como éxito
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Transición inválida según la tabla del dominio
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PaymentIntentId:
+      name: payment_intent_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Error:
+      description: Error con forma constante
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Channel:
+      type: string
+      enum: [QR, PAYMENT_LINK, DATAPHONE_SIMULATED]
+
+    Status:
+      type: string
+      description: |
+        `PENDING → APPROVED` directo no existe: todo pago pasa por `UNDER_REVIEW`
+        al enviarse a riesgo, así que ninguno puede aprobarse sin evaluación.
+        `UNDER_REVIEW` es además el estado seguro cuando el riesgo no responde
+        (ADR-0003).
+      enum: [PENDING, UNDER_REVIEW, APPROVED, REJECTED, CANCELLED, EXPIRED]
+
+    RiskDecision:
+      type: string
+      enum: [APPROVE, REVIEW, REJECT]
+
+    PaymentIntent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        external_reference: { type: string }
+        amount_minor: { type: integer, format: int64 }
+        currency: { type: string, example: COP }
+        channel: { $ref: "#/components/schemas/Channel" }
+        status: { $ref: "#/components/schemas/Status" }
+        risk_decision:
+          allOf: [{ $ref: "#/components/schemas/RiskDecision" }]
+          nullable: true
+        risk_score: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        risk_reason_codes:
+          type: array
+          items: { type: string }
+          example: [AMOUNT_ABOVE_REVIEW_THRESHOLD]
+        correlation_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    HistoryEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        payment_intent_id: { type: string, format: uuid }
+        previous_status: { type: string, description: Vacío en la creación }
+        new_status: { $ref: "#/components/schemas/Status" }
+        reason: { type: string }
+        changed_by:
+          type: string
+          description: Sale del subject del JWT o del nombre del servicio, nunca del cuerpo
+          example: "service:reconciliation-worker"
+        correlation_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - NOT_FOUND
+                - CONFLICT
+                - INVALID_TRANSITION
+                - VALIDATION_ERROR
+                - INVALID_CREDENTIALS
+                - INVALID_REQUEST_BODY
+                - INTERNAL_ERROR
+            message: { type: string }
