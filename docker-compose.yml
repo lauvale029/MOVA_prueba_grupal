@@ -117,6 +117,46 @@ services:
     networks:
       - mova
 
+  # El reloj va aparte del ejecutor (ver docs/adr/0006). Replica unica:
+  # dos schedulers publicarian el disparo dos veces.
+  reconciliation-scheduler:
+    build:
+      context: ./reconciliation-scheduler
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      INTERVAL_SECONDS: ${RECONCILIATION_INTERVAL_SECONDS:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${SCHEDULER_METRICS_PORT:-8083}:8083"
+    depends_on:
+      kafka:
+        condition: service_started
+    deploy:
+      replicas: 1
+    networks:
+      - mova
+
+  reconciliation-worker:
+    build:
+      context: ./reconciliation-worker
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      CORE_API_URL: http://core-api:8080
+      CORE_USERNAME: ${AUTH_USERNAME}
+      CORE_PASSWORD: ${AUTH_PASSWORD}
+      EXPIRY_OVERRIDE_MINUTES: ${EXPIRY_OVERRIDE_MINUTES:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${RECONCILIATION_METRICS_PORT:-8082}:8082"
+    depends_on:
+      core-api:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mova
+
 volumes:
   postgres_data:
 
