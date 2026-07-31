@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: risk-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["risk-service:8081"]
+
+  - job_name: reconciliation-worker
+    static_configs:
+      - targets: ["reconciliation-worker:8082"]
+
+  - job_name: reconciliation-scheduler
+    static_configs:
+      - targets: ["reconciliation-scheduler:8083"]
+
+  # Consumer lag de los tres grupos: risk-service, core-api y el worker.
+  # Es la senal que dice si alguien dejo de consumir sin haberse caido.
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
