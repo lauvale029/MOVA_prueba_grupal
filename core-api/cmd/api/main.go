@@ -5,10 +5,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
+	authinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/auth"
 	kafkainfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/kafka"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/memory"
 	redisinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/redis"
@@ -22,9 +24,24 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+func mustGetenv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s es obligatoria", key)
+	}
+	return v
+}
+
 func main() {
 	port := getenv("PORT", "8080")
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
+
+	jwtExpirationMinutes, err := strconv.Atoi(getenv("JWT_EXPIRATION_MINUTES", "60"))
+	if err != nil {
+		log.Fatalf("JWT_EXPIRATION_MINUTES debe ser un entero: %v", err)
+	}
+	tokens := authinfra.NewTokenService(mustGetenv("JWT_SECRET"), jwtExpirationMinutes)
+	authHandler := transporthttp.NewAuthHandler(tokens, mustGetenv("AUTH_USERNAME"), mustGetenv("AUTH_PASSWORD"))
 
 	ctx := context.Background()
 
@@ -56,7 +73,7 @@ func main() {
 
 	paymentHandler := transporthttp.NewPaymentIntentHandler(service)
 	readinessHandler := transporthttp.NewReadinessHandler(brokers[0])
-	router := transporthttp.NewRouter(paymentHandler, readinessHandler)
+	router := transporthttp.NewRouter(paymentHandler, readinessHandler, authHandler, tokens)
 
 	go func() {
 		if err := router.Listen(":" + port); err != nil {
