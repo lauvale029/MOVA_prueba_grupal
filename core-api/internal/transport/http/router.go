@@ -1,0 +1,25 @@
+package http
+
+import (
+	"github.com/gofiber/fiber/v2"
+
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/auth"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/middleware"
+)
+
+// NewRouter arma la app Fiber. /auth/login y /readiness son públicas;
+// todo lo demás exige un JWT válido (ver middleware.RequireAuth).
+func NewRouter(paymentIntentHandler *PaymentIntentHandler, readinessHandler *ReadinessHandler, authHandler *AuthHandler, tokens *auth.TokenService) *fiber.App {
+	app := fiber.New()
+
+	app.Get("/readiness", readinessHandler.Ready)
+	app.Post("/api/v1/auth/login", authHandler.Login)
+
+	protected := app.Group("/api/v1", middleware.RequireAuth(tokens))
+	protected.Post("/payment-intents", paymentIntentHandler.Create)
+	protected.Get("/payment-intents", paymentIntentHandler.List)
+	protected.Get("/payment-intents/:payment_intent_id", paymentIntentHandler.Get)
+	protected.Get("/payment-intents/:payment_intent_id/history", paymentIntentHandler.History)
+
+	return app
+}

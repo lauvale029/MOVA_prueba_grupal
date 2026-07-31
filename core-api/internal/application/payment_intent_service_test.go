@@ -1,0 +1,267 @@
+package application_test
+
+import (
+	"context"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/domain"
+)
+
+// --- fakes ---
+
+type inMemoryPaymentIntentRepository struct {
+	mu        sync.Mutex
+	byID      map[string]*domain.PaymentIntent
+	byIdemKey map[string]string
+}
+
+func newInMemoryPaymentIntentRepository() *inMemoryPaymentIntentRepository {
+	return &inMemoryPaymentIntentRepository{
+		byID:      make(map[string]*domain.PaymentIntent),
+		byIdemKey: make(map[string]string),
+	}
+}
+
+func copyPI(pi *domain.PaymentIntent) *domain.PaymentIntent {
+	cp := *pi
+	return &cp
+}
+
+func (r *inMemoryPaymentIntentRepository) Create(_ context.Context, pi *domain.PaymentIntent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.byIdemKey[pi.IdempotencyKey]; exists {
+		return application.ErrConflict
+	}
+	r.byID[pi.ID] = copyPI(pi)
+	r.byIdemKey[pi.IdempotencyKey] = pi.ID
+	return nil
+}
+
+func (r *inMemoryPaymentIntentRepository) GetByID(_ context.Context, id string) (*domain.PaymentIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pi, ok := r.byID[id]
+	if !ok {
+		return nil, application.ErrNotFound
+	}
+	return copyPI(pi), nil
+}
+
+func (r *inMemoryPaymentIntentRepository) GetByIdempotencyKey(_ context.Context, key string) (*domain.PaymentIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.byIdemKey[key]
+	if !ok {
+		return nil, application.ErrNotFound
+	}
+	return copyPI(r.byID[id]), nil
+}
+
+func (r *inMemoryPaymentIntentRepository) Update(_ context.Context, pi *domain.PaymentIntent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[pi.ID]; !ok {
+		return application.ErrNotFound
+	}
+	r.byID[pi.ID] = copyPI(pi)
+	return nil
+}
+
+func (r *inMemoryPaymentIntentRepository) List(_ context.Context, _ application.PaymentIntentFilter) ([]*domain.PaymentIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]*domain.PaymentIntent, 0, len(r.byID))
+	for _, pi := range r.byID {
+		items = append(items, copyPI(pi))
+	}
+	return items, nil
+}
+
+func (r *inMemoryPaymentIntentRepository) Count(_ context.Context, _ application.PaymentIntentFilter) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return int64(len(r.byID)), nil
+}
+
+func (r *inMemoryPaymentIntentRepository) rowCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byID)
+}
+
+type inMemoryHistoryRepository struct {
+	mu      sync.Mutex
+	entries []*domain.PaymentIntentStatusHistory
+}
+
+func (r *inMemoryHistoryRepository) Create(_ context.Context, h *domain.PaymentIntentStatusHistory) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = append(r.entries, h)
+	return nil
+}
+
+func (r *inMemoryHistoryRepository) ListByPaymentIntentID(_ context.Context, id string) ([]*domain.PaymentIntentStatusHistory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.PaymentIntentStatusHistory
+	for _, h := range r.entries {
+		if h.PaymentIntentID == id {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+type fakeUnitOfWork struct{}
+
+func (fakeUnitOfWork) Execute(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
+type fakeLocker struct{}
+
+func (fakeLocker) Acquire(_ context.Context, _ string) (func(), bool) {
+	return func() {}, true
+}
+
+type fakeRiskPublisher struct {
+	mu     sync.Mutex
+	events []application.RiskEvaluationRequested
+}
+
+func (p *fakeRiskPublisher) Publish(_ context.Context, event application.RiskEvaluationRequested) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, event)
+	return nil
+}
+
+func (p *fakeRiskPublisher) publishCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.events)
+}
+
+func newServiceForTest() (*application.PaymentIntentService, *inMemoryPaymentIntentRepository, *inMemoryHistoryRepository, *fakeRiskPublisher) {
+	payments := newInMemoryPaymentIntentRepository()
+	history := &inMemoryHistoryRepository{}
+	publisher := &fakeRiskPublisher{}
+	svc := application.NewPaymentIntentService(payments, history, fakeLocker{}, fakeUnitOfWork{}, publisher)
+	return svc, payments, history, publisher
+}
+
+// --- tests ---
+
+func TestCreate_Valid(t *testing.T) {
+	svc, _, history, publisher := newServiceForTest()
+
+	pi, err := svc.Create(context.Background(), "merchant-1", "order-1", 15_000_00, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusUnderReview, pi.Status, "todo intent pasa por UNDER_REVIEW al enviarse a riesgo")
+	assert.Equal(t, 1, publisher.publishCount())
+
+	entries, _ := history.ListByPaymentIntentID(context.Background(), pi.ID)
+	require.Len(t, entries, 2, "creado + enviado a revisión")
+	assert.Equal(t, domain.StatusPending, entries[0].NewStatus)
+	assert.Equal(t, domain.StatusUnderReview, entries[1].NewStatus)
+}
+
+func TestCreate_MissingIdempotencyKey(t *testing.T) {
+	svc, _, _, _ := newServiceForTest()
+
+	_, err := svc.Create(context.Background(), "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "", "", "mova-service")
+	assert.ErrorIs(t, err, domain.ErrMissingIdempotencyKey)
+}
+
+func TestCreate_Retry_ReturnsSameIntent_DoesNotPublishAgain(t *testing.T) {
+	svc, payments, _, publisher := newServiceForTest()
+	ctx := context.Background()
+
+	first, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+
+	second, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+
+	assert.Equal(t, first.ID, second.ID)
+	assert.Equal(t, 1, payments.rowCount())
+	assert.Equal(t, 1, publisher.publishCount())
+}
+
+func TestCreate_Concurrent_OnlyOneRowCreated(t *testing.T) {
+	svc, payments, _, _ := newServiceForTest()
+	const attempts = 20
+	var wg sync.WaitGroup
+	errs := make([]error, attempts)
+
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = svc.Create(context.Background(), "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "misma-key", "", "mova-service")
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, 1, payments.rowCount())
+}
+
+func TestApplyRiskResult_Approve(t *testing.T) {
+	svc, _, history, _ := newServiceForTest()
+	ctx := context.Background()
+
+	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+
+	resolved, err := svc.ApplyRiskResult(ctx, pi.ID, domain.RiskApprove, 10, nil, "rules-v1", "risk-service")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusApproved, resolved.Status)
+
+	entries, _ := history.ListByPaymentIntentID(ctx, pi.ID)
+	assert.Len(t, entries, 3, "creado + enviado a revisión + resultado de riesgo")
+}
+
+func TestApplyRiskResult_Review_StaysUnderReview(t *testing.T) {
+	svc, _, history, _ := newServiceForTest()
+	ctx := context.Background()
+
+	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+
+	resolved, err := svc.ApplyRiskResult(ctx, pi.ID, domain.RiskReview, 60, []string{"AMOUNT_ABOVE_THRESHOLD"}, "rules-v1", "risk-service")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusUnderReview, resolved.Status)
+
+	// Aunque el estado no cambia, se registra el reintento de evaluación.
+	entries, _ := history.ListByPaymentIntentID(ctx, pi.ID)
+	assert.Len(t, entries, 3)
+}
+
+func TestApplyRiskResult_UnknownIntent(t *testing.T) {
+	svc, _, _, _ := newServiceForTest()
+	_, err := svc.ApplyRiskResult(context.Background(), "no-existe", domain.RiskApprove, 10, nil, "rules-v1", "risk-service")
+	assert.ErrorIs(t, err, application.ErrNotFound)
+}
+
+func TestGet_NotFound(t *testing.T) {
+	svc, _, _, _ := newServiceForTest()
+	_, err := svc.Get(context.Background(), "no-existe")
+	assert.ErrorIs(t, err, application.ErrNotFound)
+}
+
+func TestHistory_NotFound(t *testing.T) {
+	svc, _, _, _ := newServiceForTest()
+	_, err := svc.History(context.Background(), "no-existe")
+	assert.ErrorIs(t, err, application.ErrNotFound)
+}

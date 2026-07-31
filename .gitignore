@@ -1,0 +1,16 @@
+.env
+*.log
+
+# Go
+core-api/api
+core-api/*.exe
+
+# Python
+**/__pycache__/
+**/.venv/
+**/*.pyc
+**/.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
