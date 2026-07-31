@@ -102,13 +102,29 @@ Ver [`.env.example`](.env.example). Resumen:
 
 ## Endpoints
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| `GET` | `/readiness` | Confirma que Kafka es alcanzable |
-| `POST` | `/api/v1/payment-intents` | Crea un Payment Intent (requiere `Idempotency-Key`) |
-| `GET` | `/api/v1/payment-intents` | Lista con filtros `merchant_id`, `status`, `page`, `limit` |
-| `GET` | `/api/v1/payment-intents/{id}` | Consulta un Payment Intent |
-| `GET` | `/api/v1/payment-intents/{id}/history` | Historial de cambios de estado |
+| Método | Ruta | Auth | Descripción |
+|---|---|---|---|
+| `GET` | `/readiness` | No | Confirma que Kafka es alcanzable |
+| `POST` | `/api/v1/auth/login` | No | Autentica con la credencial de servicio, devuelve un JWT |
+| `POST` | `/api/v1/payment-intents` | **Sí** | Crea un Payment Intent (requiere `Idempotency-Key`) |
+| `GET` | `/api/v1/payment-intents` | **Sí** | Lista con filtros `merchant_id`, `status`, `page`, `limit` |
+| `GET` | `/api/v1/payment-intents/{id}` | **Sí** | Consulta un Payment Intent |
+| `GET` | `/api/v1/payment-intents/{id}/history` | **Sí** | Historial de cambios de estado |
+
+### Autenticación
+
+No hay tabla de usuarios — una única credencial de servicio configurada
+por variables de entorno (`AUTH_USERNAME`/`AUTH_PASSWORD`), igual que en
+el proyecto individual de referencia. `POST /auth/login` devuelve un JWT
+(HS256, expira según `JWT_EXPIRATION_MINUTES`); el resto de los
+endpoints de pagos exige `Authorization: Bearer <token>`. El `subject`
+del token queda como `changed_by` en cada entrada del historial.
+
+```bash
+curl -X POST http://localhost:8095/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"...","password":"..."}'
+```
 
 ## Pruebas
 
@@ -118,17 +134,22 @@ go test ./...                        # unitarias, sin dependencias externas
 go test -tags=integration ./...      # contra Kafka real (requiere docker compose up)
 ```
 
-- `internal/domain` (22 tests): reglas de validación, tabla de
+- `internal/domain` (10 tests): reglas de validación, tabla de
   transiciones completa, aplicación de decisiones de riesgo.
-- `internal/application` (11 tests): `PaymentIntentService` con
+- `internal/application` (9 tests): `PaymentIntentService` con
   repositorios falsos en memoria — incluye un test de concurrencia real
   (20 goroutines, misma `idempotency_key`, una sola fila creada).
 - `internal/infrastructure/memory` (7 tests): los repositorios
   temporales en memoria.
-- `internal/infrastructure/kafka` (4 tests, integración): productor,
+- `internal/infrastructure/auth` (4 tests): firma/validación de JWT
+  (round-trip, secreto incorrecto, expirado, malformado).
+- `internal/middleware` (3 tests): `RequireAuth` — token válido,
+  ausente, inválido.
+- `internal/infrastructure/kafka` (3 tests, integración): productor,
   consumidor, y `EnsureTopics`, contra un broker Kafka real.
-- `internal/transport/http` (10 tests, 1 de integración): endpoints con
-  fakes, más el chequeo de `/readiness` contra Kafka real.
+- `internal/transport/http` (15 tests, 1 de integración): login,
+  endpoints de pagos protegidos (incluye el caso sin token → 401), y
+  `/readiness` contra Kafka real.
 
 ## Decisiones documentadas (ADR)
 
@@ -154,7 +175,6 @@ Temporales, explícitamente marcados con `TODO` en el código:
   Service), el plan es caer a una llamada HTTP directa — quedó fuera de
   esta iteración, se agrega una vez que el camino feliz con Kafka esté
   probado en equipo.
-- **Autenticación**: JWT, en un PR aparte inmediatamente después de este.
 
 ## Matriz de contribuciones
 
@@ -163,3 +183,4 @@ Temporales, explícitamente marcados con `TODO` en el código:
 | PR | Autor | Resumen | Archivos principales |
 |---|---|---|---|
 | `feature/payment-intent-core` | Valentina | Esqueleto del repo, dominio y aplicación de `PaymentIntent`, mensajería Kafka real (productor + consumidor + `EnsureTopics`), endpoints HTTP + `/readiness`, 3 ADRs. Persistencia real (Postgres/Redis) queda pendiente de Eduard — ver [Pendientes](#pendientes). | `core-api/internal/domain`, `core-api/internal/application`, `core-api/internal/infrastructure/{kafka,memory,redis}`, `core-api/internal/transport/http`, `docker-compose.yml`, `docs/adr/` |
+| `feature/auth-middleware` | Valentina | Autenticación JWT (login + middleware) sobre los endpoints de pagos, sin tabla de usuarios — misma credencial de servicio del proyecto individual de referencia. `changed_by` en el historial ahora sale del subject del token, no de un valor fijo. | `core-api/internal/infrastructure/auth`, `core-api/internal/middleware`, `core-api/internal/transport/http/{auth_handler.go,auth_context.go,router.go}` |
