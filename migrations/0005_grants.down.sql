@@ -1,0 +1,3 @@
+REVOKE ALL ON ALL TABLES IN SCHEMA payments FROM mova_app, mova_auditor;
+ALTER DEFAULT PRIVILEGES FOR ROLE mova_owner IN SCHEMA payments
+    REVOKE SELECT ON TABLES FROM mova_auditor;

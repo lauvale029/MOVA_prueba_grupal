@@ -48,6 +48,23 @@ services:
     networks:
       - mova
 
+  # Aplica las migraciones y termina. Ningun servicio arranca antes de
+  # que salga con exito (ver docs/esquema-de-datos.md).
+  db-migrator:
+    image: migrate/migrate:v4.18.1
+    restart: "no"
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${DB_USER:-mova}:${DB_PASSWORD:-mova}@postgres:5432/${DB_NAME:-mova_orchestrator}?sslmode=disable"
+      - "up"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mova
+
   core-api:
     build:
       context: ./core-api
@@ -61,8 +78,8 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-migrator:
+        condition: service_completed_successfully
       redis:
         condition: service_started
       kafka:

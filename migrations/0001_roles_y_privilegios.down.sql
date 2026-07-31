@@ -1,0 +1,4 @@
+DROP SCHEMA IF EXISTS payments CASCADE;
+DROP ROLE IF EXISTS mova_auditor;
+DROP ROLE IF EXISTS mova_app;
+DROP ROLE IF EXISTS mova_owner;
