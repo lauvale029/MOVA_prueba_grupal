@@ -13,7 +13,7 @@ import (
 
 func TestReadiness_KafkaUnreachable_ReturnsServiceUnavailable(t *testing.T) {
 	handler := transporthttp.NewReadinessHandler("localhost:1") // puerto sin nada escuchando
-	app := transporthttp.NewRouter(nil, handler, nil, nil)      // no se usan en este test
+	app := transporthttp.NewRouter(nil, nil, handler, nil, nil) // no se usan en este test
 
 	req := httptest.NewRequest(http.MethodGet, "/readiness", nil)
 	resp, err := app.Test(req, -1)

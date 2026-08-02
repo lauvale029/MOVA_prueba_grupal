@@ -13,6 +13,7 @@ import (
 	authinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/auth"
 	kafkainfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/kafka"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/memory"
+	postgresinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/postgres"
 	redisinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/redis"
 	transporthttp "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/transport/http"
 )
@@ -49,8 +50,18 @@ func main() {
 		log.Fatalf("no se pudieron preparar los tópicos de Kafka: %v", err)
 	}
 
-	// TODO(Eduard): reemplazar por implementaciones reales de Postgres y
-	// Redis cuando existan (ver README, sección de pendientes).
+	pool, err := postgresinfra.NewPool(ctx, mustGetenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("no se pudo conectar a postgres: %v", err)
+	}
+	defer pool.Close()
+
+	merchantRepo := postgresinfra.NewMerchantRepository(pool)
+	merchantService := application.NewMerchantService(merchantRepo)
+	merchantHandler := transporthttp.NewMerchantHandler(merchantService)
+
+	// TODO: reemplazar por implementaciones reales de Postgres/Redis para
+	// payment intents (ver README, sección de pendientes) — Fase B.
 	payments := memory.NewPaymentIntentRepository()
 	history := memory.NewPaymentIntentStatusHistoryRepository()
 	locker := redisinfra.NoopIdempotencyLocker{}
@@ -73,7 +84,7 @@ func main() {
 
 	paymentHandler := transporthttp.NewPaymentIntentHandler(service)
 	readinessHandler := transporthttp.NewReadinessHandler(brokers[0])
-	router := transporthttp.NewRouter(paymentHandler, readinessHandler, authHandler, tokens)
+	router := transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, tokens)
 
 	go func() {
 		if err := router.Listen(":" + port); err != nil {

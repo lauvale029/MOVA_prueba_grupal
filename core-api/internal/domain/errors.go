@@ -10,4 +10,8 @@ var (
 	ErrMissingIdempotencyKey    = errors.New("idempotency_key es obligatorio")
 	ErrMissingMerchantID        = errors.New("merchant_id es obligatorio")
 	ErrInvalidTransition        = errors.New("la transición de estado no está permitida")
+
+	ErrMissingMerchantName   = errors.New("name es obligatorio")
+	ErrMissingDocumentNumber = errors.New("document_number es obligatorio")
+	ErrMissingEmail          = errors.New("email es obligatorio")
 )
