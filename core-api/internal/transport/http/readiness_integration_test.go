@@ -15,7 +15,7 @@ import (
 
 func TestReadiness_KafkaReachable_ReturnsOK(t *testing.T) {
 	handler := transporthttp.NewReadinessHandler("localhost:9092")
-	app := transporthttp.NewRouter(nil, handler, nil, nil) // no se usan en este test
+	app := transporthttp.NewRouter(nil, nil, handler, nil, nil) // no se usan en este test
 
 	req := httptest.NewRequest(http.MethodGet, "/readiness", nil)
 	resp, err := app.Test(req, -1)

@@ -14,6 +14,11 @@ type PaymentIntentFilter struct {
 	Limit      int
 }
 
+type MerchantRepository interface {
+	Create(ctx context.Context, m *domain.Merchant) error
+	GetByID(ctx context.Context, id string) (*domain.Merchant, error)
+}
+
 type PaymentIntentRepository interface {
 	Create(ctx context.Context, pi *domain.PaymentIntent) error
 	GetByID(ctx context.Context, id string) (*domain.PaymentIntent, error)

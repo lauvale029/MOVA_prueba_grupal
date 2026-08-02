@@ -37,7 +37,10 @@ func handleError(c *fiber.Ctx, err error) error {
 		errors.Is(err, domain.ErrMissingExternalReference),
 		errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrInvalidCurrency),
-		errors.Is(err, domain.ErrInvalidChannel):
+		errors.Is(err, domain.ErrInvalidChannel),
+		errors.Is(err, domain.ErrMissingMerchantName),
+		errors.Is(err, domain.ErrMissingDocumentNumber),
+		errors.Is(err, domain.ErrMissingEmail):
 		return errorResponse(c, fiber.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	default:
 		return errorResponse(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "error interno")
