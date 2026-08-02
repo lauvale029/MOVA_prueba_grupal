@@ -11,13 +11,20 @@ CORE="${CORE_URL:-http://localhost:8095}"
 RISK="${RISK_URL:-http://localhost:8081}"
 USER="${AUTH_USERNAME:-svc}"
 PASS="${AUTH_PASSWORD:-svc}"
-MERCHANT="22222222-2222-2222-2222-222222222222"
 
 ok=0; fallos=0
 verde() { printf "  \033[32m✓\033[0m %s\n" "$1"; ok=$((ok+1)); }
 rojo()  { printf "  \033[31m✗\033[0m %s\n" "$1"; fallos=$((fallos+1)); }
 paso()  { printf "\n\033[1m%s\033[0m\n" "$1"; }
-jq_()   { python3 -c "import sys,json;d=json.load(sys.stdin);print(d$1)"; }
+
+# En Windows, "python3" suele ser el alias roto de la Store (falla en
+# ejecución aunque exista en el PATH) — se prueba de verdad, no solo con
+# command -v, y se cae a "python" si hace falta.
+PY=python3
+python3 -c "" >/dev/null 2>&1 || PY=python
+jq_()    { "$PY" -c "import sys,json;d=json.load(sys.stdin);print(d$1)"; }
+# uuidgen no existe en Git Bash de Windows — se genera con Python en ese caso.
+uuid_()  { command -v uuidgen >/dev/null 2>&1 && uuidgen || "$PY" -c "import uuid;print(uuid.uuid4())"; }
 
 paso "0 · Salud"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$CORE/readiness")" = 200 ] \
@@ -44,8 +51,17 @@ AUTH=(-H "Authorization: Bearer $TOKEN")
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$CORE/api/v1/payment-intents")" = 401 ] \
   && verde "sin token → 401" || rojo "los endpoints no exigen JWT"
 
+paso "2.5 · Crear un comercio"
+# payment_intents.merchant_id tiene FK contra payments.merchants desde la
+# migración 0006 — hace falta un comercio real antes de poder crear intents.
+DOC="900-demo-$(date +%s)"
+MERCHANT=$(curl -s -X POST "$CORE/api/v1/merchants" "${AUTH[@]}" \
+  -H 'content-type: application/json' \
+  -d "{\"name\":\"Comercio Demo\",\"document_number\":\"$DOC\",\"email\":\"demo@comercio.test\"}" | jq_ "['id']")
+[ -n "$MERCHANT" ] && verde "comercio creado $MERCHANT" || rojo "no se pudo crear el comercio"
+
 paso "3 · Crear un Payment Intent"
-IDEM=$(uuidgen); REF="ORDER-DEMO-$(date +%s)"
+IDEM=$(uuid_); REF="ORDER-DEMO-$(date +%s)"
 CUERPO="{\"merchant_id\":\"$MERCHANT\",\"external_reference\":\"$REF\",\"amount_minor\":150000,\"currency\":\"COP\",\"channel\":\"QR\"}"
 CREADO=$(curl -s -X POST "$CORE/api/v1/payment-intents" "${AUTH[@]}" \
   -H 'content-type: application/json' -H "Idempotency-Key: $IDEM" -d "$CUERPO")
@@ -78,40 +94,48 @@ ID2=$(curl -s -X POST "$CORE/api/v1/payment-intents" "${AUTH[@]}" \
 
 paso "6 · Referencia externa duplicada"
 COD=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CORE/api/v1/payment-intents" "${AUTH[@]}" \
-  -H 'content-type: application/json' -H "Idempotency-Key: $(uuidgen)" -d "$CUERPO")
+  -H 'content-type: application/json' -H "Idempotency-Key: $(uuid_)" -d "$CUERPO")
 [ "$COD" = "409" ] && verde "llave nueva + misma referencia → 409" || rojo "esperaba 409 y dio $COD"
 
 paso "7 · Valores inválidos"
 COD=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CORE/api/v1/payment-intents" "${AUTH[@]}" \
-  -H 'content-type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -H 'content-type: application/json' -H "Idempotency-Key: $(uuid_)" \
   -d "{\"merchant_id\":\"$MERCHANT\",\"external_reference\":\"X-$(date +%s)\",\"amount_minor\":0,\"currency\":\"COP\",\"channel\":\"QR\"}")
 [ "$COD" = "422" ] && verde "monto cero → 422" || rojo "esperaba 422 y dio $COD"
 
 paso "8 · Historial con actor, motivo, correlación y fecha"
-curl -s "$CORE/api/v1/payment-intents/$ID/history" "${AUTH[@]}" > /tmp/hist.json
-python3 - <<'PY'
-import json
-h = json.load(open("/tmp/hist.json"))
+# Ruta relativa al directorio actual, no /tmp: bash (MSYS) y un Python
+# nativo de Windows resuelven /tmp de forma distinta, y esto tiene que
+# poder leerlo cualquiera de los dos.
+HIST_FILE="demo-hist.json"
+curl -s "$CORE/api/v1/payment-intents/$ID/history" "${AUTH[@]}" > "$HIST_FILE"
+"$PY" - "$HIST_FILE" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))
 for e in h:
     print(f"     {e['previous_status'] or 'null':<13} -> {e['new_status']:<13} by {e['changed_by']:<18} | {e['reason']}")
 completo = all(e["changed_by"] and e["correlation_id"] and e["created_at"] for e in h)
 print(f"__RESULT__{'ok' if h and completo else 'fail'}|{len(h)}")
 PY
-RES=$(python3 -c "
-import json;h=json.load(open('/tmp/hist.json'))
-print('ok' if h and all(e['changed_by'] and e['correlation_id'] and e['created_at'] for e in h) else 'fail')")
+RES=$("$PY" -c "
+import json,sys;h=json.load(open(sys.argv[1]))
+print('ok' if h and all(e['changed_by'] and e['correlation_id'] and e['created_at'] for e in h) else 'fail')" "$HIST_FILE")
 [ "$RES" = "ok" ] && verde "toda entrada está atribuida" || rojo "hay entradas sin atribución"
+rm -f "$HIST_FILE"
 
 paso "9 · Garantías del esquema (contra PostgreSQL)"
-# core-api todavia persiste en memoria (ver README -> Pendientes), asi que las
-# tablas estan vacias. Se siembra una fila para que los triggers tengan sobre
-# que actuar: sin datos, un UPDATE afecta 0 filas y no dispara nada.
-SEED=$(uuidgen)
+# Se siembra una fila (con su propio comercio, por la FK de la migración
+# 0006) para que los triggers tengan sobre que actuar: sin datos, un UPDATE
+# afecta 0 filas y no dispara nada.
+SEED=$(uuid_)
+SEED_MERCHANT=$(uuid_)
 docker compose exec -T postgres psql -U mova -d mova_orchestrator -q >/dev/null 2>&1 <<SQL
 BEGIN;
+INSERT INTO payments.merchants (id, name, document_number, email)
+VALUES ('$SEED_MERCHANT', 'Comercio Semilla', 'SEED-DOC-$SEED', 'seed@demo.test');
 INSERT INTO payments.payment_intents (id, merchant_id, external_reference, idempotency_key,
   amount_minor, currency, channel, correlation_id, expires_at)
-VALUES ('$SEED', gen_random_uuid(), 'SEED-$SEED', '$SEED', 1000, 'COP', 'QR',
+VALUES ('$SEED', '$SEED_MERCHANT', 'SEED-$SEED', '$SEED', 1000, 'COP', 'QR',
         gen_random_uuid(), now() + interval '30 min');
 INSERT INTO payments.payment_intent_status_history
   (payment_intent_id, previous_status, new_status, reason, changed_by, correlation_id)
@@ -132,9 +156,9 @@ probar_sql "historial inmutable ante DELETE" \
 probar_sql "no se borra un intent con historial" \
   "DELETE FROM payments.payment_intents WHERE id='$SEED';" "foreign key|viola"
 probar_sql "llave de idempotencia duplicada rechazada" \
-  "INSERT INTO payments.payment_intents (merchant_id, external_reference, idempotency_key, amount_minor, currency, channel, correlation_id, expires_at) VALUES (gen_random_uuid(), 'OTRA-$SEED', '$SEED', 1, 'COP', 'QR', gen_random_uuid(), now() + interval '30 min');" "duplicate key|uq_intent_idempotency"
+  "INSERT INTO payments.payment_intents (merchant_id, external_reference, idempotency_key, amount_minor, currency, channel, correlation_id, expires_at) VALUES ('$SEED_MERCHANT', 'OTRA-$SEED', '$SEED', 1, 'COP', 'QR', gen_random_uuid(), now() + interval '30 min');" "duplicate key|uq_intent_idempotency"
 probar_sql "resolver sin decisión de riesgo rechazado" \
-  "INSERT INTO payments.payment_intents (merchant_id, external_reference, idempotency_key, amount_minor, currency, channel, status, correlation_id, expires_at) VALUES (gen_random_uuid(), 'X-$SEED', gen_random_uuid()::text, 1, 'COP', 'QR', 'APPROVED', gen_random_uuid(), now() + interval '30 min');" "ck_intent_no_silent_resolution"
+  "INSERT INTO payments.payment_intents (merchant_id, external_reference, idempotency_key, amount_minor, currency, channel, status, correlation_id, expires_at) VALUES ('$SEED_MERCHANT', 'X-$SEED', gen_random_uuid()::text, 1, 'COP', 'QR', 'APPROVED', gen_random_uuid(), now() + interval '30 min');" "ck_intent_no_silent_resolution"
 probar_sql "la aplicación no puede borrar" \
   "SET ROLE mova_app; DELETE FROM payments.payment_intents;" "permission denied"
 

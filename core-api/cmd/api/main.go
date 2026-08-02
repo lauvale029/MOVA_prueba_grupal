@@ -12,7 +12,6 @@ import (
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
 	authinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/auth"
 	kafkainfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/kafka"
-	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/memory"
 	postgresinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/postgres"
 	redisinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/redis"
 	transporthttp "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/transport/http"
@@ -60,12 +59,12 @@ func main() {
 	merchantService := application.NewMerchantService(merchantRepo)
 	merchantHandler := transporthttp.NewMerchantHandler(merchantService)
 
-	// TODO: reemplazar por implementaciones reales de Postgres/Redis para
-	// payment intents (ver README, sección de pendientes) — Fase B.
-	payments := memory.NewPaymentIntentRepository()
-	history := memory.NewPaymentIntentStatusHistoryRepository()
+	// TODO: reemplazar por el lock real de Redis (ver README, sección de
+	// pendientes) — Fase E.
+	payments := postgresinfra.NewPaymentIntentRepository(pool)
+	history := postgresinfra.NewPaymentIntentStatusHistoryRepository(pool)
 	locker := redisinfra.NoopIdempotencyLocker{}
-	uow := memory.UnitOfWork{}
+	uow := postgresinfra.NewUnitOfWork(pool)
 	riskPublisher := kafkainfra.NewRiskRequestPublisher(brokers)
 	defer riskPublisher.Close()
 
