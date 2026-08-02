@@ -1,0 +1,51 @@
+[project]
+name = "risk-service"
+version = "0.1.0"
+description = "Evaluacion de riesgo determinista para MOVA Payment Orchestrator"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.34,<0.35",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+    "aiokafka>=0.12,<0.13",
+    "structlog>=24.4,<25",
+    "prometheus-client>=0.21,<0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.25,<0.26",
+    "httpx>=0.28,<0.29",
+    "ruff>=0.9,<0.10",
+    "mypy>=1.14,<2",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["app"]
+
+# aiokafka no publica py.typed. Se silencia solo ese modulo, no el proyecto.
+[[tool.mypy.overrides]]
+module = ["aiokafka.*"]
+ignore_missing_imports = true

@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: MOVA Risk Service
+  version: 1.0.0
+  description: Evaluacion de riesgo deterministica. El camino de produccion es Kafka
+    (ver ADR-0001); este endpoint HTTP existe para probar y demostrar las reglas sin
+    levantar el broker.
+paths:
+  /health:
+    get:
+      summary: Health
+      description: Vive el proceso. No toca dependencias a proposito.
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Health Health Get
+  /readiness:
+    get:
+      summary: Readiness
+      description: 'Listo para trabajar. Con Kafka activo exige estar conectado: un
+
+        consumidor arriba pero sin broker no sirve para nada.'
+      operationId: readiness_readiness_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /metrics:
+    get:
+      summary: Prometheus Metrics
+      operationId: prometheus_metrics_metrics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/risk-evaluations:
+    post:
+      summary: Evaluate Now
+      operationId: evaluate_now_api_v1_risk_evaluations_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    EvaluateRequest:
+      properties:
+        payment_intent_id:
+          type: string
+          title: Payment Intent Id
+        merchant_id:
+          type: string
+          title: Merchant Id
+        external_reference:
+          type: string
+          title: External Reference
+          default: ''
+        amount_minor:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Amount Minor
+        currency:
+          type: string
+          title: Currency
+          default: COP
+        channel:
+          type: string
+          title: Channel
+          default: ''
+      type: object
+      required:
+      - payment_intent_id
+      - merchant_id
+      - amount_minor
+      title: EvaluateRequest
+    EvaluateResponse:
+      properties:
+        payment_intent_id:
+          type: string
+          title: Payment Intent Id
+        decision:
+          type: string
+          title: Decision
+        score:
+          type: integer
+          title: Score
+        reason_codes:
+          items:
+            type: string
+          type: array
+          title: Reason Codes
+        model_version:
+          type: string
+          title: Model Version
+      type: object
+      required:
+      - payment_intent_id
+      - decision
+      - score
+      - reason_codes
+      - model_version
+      title: EvaluateResponse
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+servers:
+- url: http://localhost:8081
+  description: local
+

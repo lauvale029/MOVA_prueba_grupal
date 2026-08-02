@@ -1,0 +1,722 @@
+{
+  "info": {
+    "name": "MOVA Payment Orchestrator",
+    "description": "Guion de demo del sistema completo. Cada peticion **afirma algo** con pm.test: una coleccion que solo dispara llamadas no demuestra nada.\n\nSe ejecuta entera con el Collection Runner o con `newman run`. Las carpetas van en orden y comparten variables, asi que el orden importa.\n\nLa carpeta 5 esta marcada como PENDIENTE: depende de un endpoint que core-api todavia no expone (ver README -> Pendientes).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "core_url",
+      "value": "http://localhost:8095"
+    },
+    {
+      "key": "risk_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "intent_id",
+      "value": ""
+    },
+    {
+      "key": "idem_key",
+      "value": ""
+    },
+    {
+      "key": "merchant_id",
+      "value": "22222222-2222-2222-2222-222222222222"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "0 · Salud",
+      "description": "Que todo este arriba antes de empezar.",
+      "item": [
+        {
+          "name": "core-api /readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"core-api listo\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/readiness"
+            },
+            "description": "Confirma que core-api alcanza Kafka."
+          }
+        },
+        {
+          "name": "risk-service /readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"risk-service conectado a Kafka\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{risk_url}}/readiness"
+            },
+            "description": "503 si el consumidor no esta conectado al broker: vivo no es lo mismo que listo."
+          }
+        },
+        {
+          "name": "risk-service /metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"expone metricas\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.text()).to.include(\"risk_evaluations_total\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{risk_url}}/metrics"
+            },
+            "description": "Formato Prometheus."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 · Autenticacion",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 y devuelve token\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json()).to.have.property(\"token\");",
+                  "});",
+                  "pm.collectionVariables.set(\"token\", pm.response.json().token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/auth/login"
+            },
+            "description": "Guarda el token en la variable de coleccion: nadie copia y pega tokens a mano.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{auth_username}}\",\n  \"password\": \"{{auth_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Sin token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 sin credencial\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": ""
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents"
+            },
+            "description": "Los endpoints de pagos exigen JWT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · Reglas de riesgo (directo)",
+      "description": "Contra risk-service, sin pasar por Kafka. Demuestra las tres decisiones y que el score discrimina.",
+      "item": [
+        {
+          "name": "Monto bajo → APPROVE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"APPROVE con LOW_RISK\", () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.decision).to.eql(\"APPROVE\");",
+                  "    pm.expect(b.reason_codes).to.eql([\"LOW_RISK\"]);",
+                  "});",
+                  "pm.test(\"score bajo y acotado\", () => {",
+                  "    const s = pm.response.json().score;",
+                  "    pm.expect(s).to.be.at.least(0).and.at.most(100);",
+                  "    pm.expect(s).to.be.below(30);",
+                  "});",
+                  "pm.test(\"lleva model_version\", () => {",
+                  "    pm.expect(pm.response.json().model_version).to.eql(\"rules-v1\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"demo-1\",\n  \"merchant_id\": \"m-demo-1\",\n  \"external_reference\": \"ORDER-1001\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Monto alto → REVIEW",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"REVIEW por monto\", () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.decision).to.eql(\"REVIEW\");",
+                  "    pm.expect(b.reason_codes).to.include(\"AMOUNT_ABOVE_REVIEW_THRESHOLD\");",
+                  "});",
+                  "pm.test(\"score mas alto que el aprobado\", () => {",
+                  "    pm.expect(pm.response.json().score).to.be.above(50);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+            },
+            "description": "Sobre el umbral configurable no se rechaza: se manda a revision humana.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"demo-2\",\n  \"merchant_id\": \"m-demo-2\",\n  \"external_reference\": \"ORDER-1002\",\n  \"amount_minor\": 50000000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Referencia sospechosa → REJECT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"REJECT bloqueante\", () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.decision).to.eql(\"REJECT\");",
+                  "    pm.expect(b.reason_codes).to.eql([\"SUSPICIOUS_REFERENCE\"]);",
+                  "    pm.expect(b.score).to.eql(100);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+            },
+            "description": "La regla mas severa gana aunque el monto sea bajo.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"demo-3\",\n  \"merchant_id\": \"m-demo-3\",\n  \"external_reference\": \"FRAUD-9\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Monto invalido → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 en el borde\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+            },
+            "description": "Se valida en el borde, antes de tocar las reglas.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"demo-4\",\n  \"merchant_id\": \"m-demo-4\",\n  \"external_reference\": \"ORDER-4\",\n  \"amount_minor\": 0,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · Payment Intents",
+      "item": [
+        {
+          "name": "Crear pago por QR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 creado\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"no viene resuelto: la decision llega despues\", () => {",
+                  "    pm.expect(b.status).to.be.oneOf([\"PENDING\", \"UNDER_REVIEW\"]);",
+                  "});",
+                  "pm.test(\"dinero en entero, nunca decimal\", () => {",
+                  "    pm.expect(b.amount_minor).to.eql(150000);",
+                  "    pm.expect(Number.isInteger(b.amount_minor)).to.be.true;",
+                  "});",
+                  "pm.test(\"lleva correlation_id y expires_at\", () => {",
+                  "    pm.expect(b.correlation_id).to.not.be.empty;",
+                  "    pm.expect(b.expires_at).to.not.be.empty;",
+                  "});",
+                  "pm.collectionVariables.set(\"intent_id\", b.id);",
+                  "pm.collectionVariables.set(\"idem_key\", pm.request.headers.get(\"Idempotency-Key\"));",
+                  "pm.collectionVariables.set(\"external_reference\", b.external_reference);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents"
+            },
+            "description": "Nace en PENDING y pasa a UNDER_REVIEW antes de publicar el evento de riesgo (ADR-0001).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-{{$timestamp}}\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Reintento con la misma llave",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"devuelve el MISMO intent, no uno nuevo\", () => {",
+                  "    pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"intent_id\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idem_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents"
+            },
+            "description": "La garantia final es la restriccion unica en PostgreSQL, no el lock de Redis (ADR-0002).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"{{external_reference}}\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultar el intent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 y es el mismo\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"intent_id\"));",
+                  "});",
+                  "pm.test(\"si ya se resolvio, trae la decision de riesgo\", () => {",
+                  "    const b = pm.response.json();",
+                  "    if ([\"APPROVED\", \"REJECTED\"].includes(b.status)) {",
+                  "        pm.expect(b.risk_decision).to.not.be.null;",
+                  "        pm.expect(b.risk_score).to.be.at.least(0).and.at.most(100);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}"
+            },
+            "description": "Tras unos segundos el riesgo ya respondio por Kafka."
+          }
+        },
+        {
+          "name": "Historial del intent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"hay al menos una entrada\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json()).to.be.an(\"array\").that.is.not.empty;",
+                  "});",
+                  "pm.test(\"cada entrada esta atribuida\", () => {",
+                  "    pm.response.json().forEach(e => {",
+                  "        pm.expect(e.changed_by, \"actor\").to.not.be.empty;",
+                  "        pm.expect(e.new_status, \"estado nuevo\").to.not.be.empty;",
+                  "        pm.expect(e.correlation_id, \"correlacion\").to.not.be.empty;",
+                  "        pm.expect(e.created_at, \"fecha\").to.not.be.empty;",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}/history"
+            },
+            "description": "Actor, motivo, correlacion y fecha en cada entrada."
+          }
+        },
+        {
+          "name": "Referencia externa duplicada → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409, no 201\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents"
+            },
+            "description": "Llave nueva pero misma referencia: es un duplicado real, no un reintento.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"{{external_reference}}\",\n  \"amount_minor\": 999,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Monto invalido → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 por monto no positivo\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-INVALIDO-{{$timestamp}}\",\n  \"amount_minor\": 0,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Listar por estado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 y viene paginado\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b).to.have.all.keys(\"data\", \"page\", \"limit\", \"total\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&page=1&limit=20"
+            },
+            "description": "Es la consulta que usa el reconciliation-worker para detectar vencidos."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · Conciliacion",
+      "description": "El worker hace esto mismo cada vez que llega un tick del scheduler.",
+      "item": [
+        {
+          "name": "Listar abiertos (lo que ve el worker)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const abiertos = pm.response.json().data || [];",
+                  "pm.test(\"todos traen expires_at para poder decidir\", () => {",
+                  "    abiertos.forEach(i => pm.expect(i.expires_at).to.not.be.empty);",
+                  "});",
+                  "console.log(`el worker evaluaria ${abiertos.length} intents`);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&limit=100"
+            },
+            "description": "El worker filtra despues por expires_at. La ventana la define el core, no el worker."
+          }
+        },
+        {
+          "name": "[PENDIENTE] Expirar un intent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const implementado = pm.response.code !== 404 && pm.response.code !== 405;",
+                  "pm.test(\"[informativo] el endpoint de transicion existe\", () => {",
+                  "    if (!implementado) {",
+                  "        console.log(\"PENDIENTE: falta PATCH /payment-intents/{id}/status en core-api\");",
+                  "    }",
+                  "    pm.expect(true).to.be.true;   // no rompe la corrida: es un pendiente conocido",
+                  "});",
+                  "if (implementado) {",
+                  "    pm.test(\"200 o 409 y queda EXPIRED\", () => {",
+                  "        pm.expect(pm.response.code).to.be.oneOf([200, 409]);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Correlation-Id",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}/status"
+            },
+            "description": "PENDIENTE: core-api no expone este endpoint todavia. El worker lo consume y distingue el 404 de una caida (StatusEndpointMissing). Contrato completo en docs/openapi/core-api-v1.yaml.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"EXPIRED\",\n  \"reason\": \"vencido sin resolverse dentro de la ventana\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

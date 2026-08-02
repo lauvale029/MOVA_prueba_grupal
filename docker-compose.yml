@@ -45,6 +45,14 @@ services:
       # tener que coordinar su creación manual entre Go y Python.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    # Sin healthcheck, "started" solo dice que el contenedor arranco, no que el
+    # broker acepte conexiones: los consumidores morian al bootstrap.
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
     networks:
       - mova
 
@@ -83,10 +91,108 @@ services:
       redis:
         condition: service_started
       kafka:
-        condition: service_started
+        condition: service_healthy
     networks:
       - mova
 
+  # --- Servicios Python (Sergio) -------------------------------------
+
+  risk-service:
+    build:
+      context: ./risk-service
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_ENABLED: "true"
+      REVIEW_AMOUNT_MINOR: ${REVIEW_AMOUNT_MINOR:-10000000}
+      VELOCITY_MAX_RECENT: ${VELOCITY_MAX_RECENT:-10}
+      VELOCITY_WINDOW_SECONDS: ${VELOCITY_WINDOW_SECONDS:-60}
+      SUSPICIOUS_REFERENCE_PREFIXES: ${SUSPICIOUS_REFERENCE_PREFIXES:-TEST-,FRAUD-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${RISK_PORT:-8081}:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mova
+
+  # El reloj va aparte del ejecutor (ver docs/adr/0006). Replica unica:
+  # dos schedulers publicarian el disparo dos veces.
+  reconciliation-scheduler:
+    build:
+      context: ./reconciliation-scheduler
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      INTERVAL_SECONDS: ${RECONCILIATION_INTERVAL_SECONDS:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${SCHEDULER_METRICS_PORT:-8083}:8083"
+    depends_on:
+      kafka:
+        condition: service_started
+    deploy:
+      replicas: 1
+    networks:
+      - mova
+
+  reconciliation-worker:
+    build:
+      context: ./reconciliation-worker
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      CORE_API_URL: http://core-api:8080
+      CORE_USERNAME: ${AUTH_USERNAME}
+      CORE_PASSWORD: ${AUTH_PASSWORD}
+      EXPIRY_OVERRIDE_MINUTES: ${EXPIRY_OVERRIDE_MINUTES:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${RECONCILIATION_METRICS_PORT:-8082}:8082"
+    depends_on:
+      core-api:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mova
+
+  # --- Observabilidad -------------------------------------------------
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    command: ["--kafka.server=kafka:29092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mova
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - mova
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - mova
 volumes:
   postgres_data:
 
