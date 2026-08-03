@@ -453,35 +453,69 @@ cuando falla— están en
 |---|---|
 | [`docs/openapi/core-api-v1.yaml`](docs/openapi/core-api-v1.yaml) | Contrato de `core-api`, **escrito desde el lado del consumidor**. Incluye el `PATCH /status` pendiente, marcado con `x-status: pendiente` |
 | [`docs/openapi/risk-service-v1.yaml`](docs/openapi/risk-service-v1.yaml) | Generado del código con [`scripts/export-openapi.sh`](scripts/export-openapi.sh) |
-| [`docs/postman/`](docs/postman/MOVA.postman_collection.json) | Colección de demo con `pm.test` en cada petición, y su entorno |
+| [`docs/postman/`](docs/postman/README.md) | Colección con `pm.test` en cada petición, su entorno y cómo se corre |
 
 Swagger UI del `risk-service` sale gratis en http://localhost:8081/docs.
 
-**La colección afirma, no solo dispara.** 18 peticiones en 5 carpetas con 28
-aserciones: que el reintento devuelve el mismo intent, que el dinero es entero,
-que cada entrada del historial está atribuida, que la referencia duplicada da
-`409` y no `201`.
+**La colección afirma, no solo dispara.** 33 peticiones en 6 carpetas con **55
+aserciones**: que el reintento devuelve el mismo intent, que el dinero es
+entero, que cada entrada del historial está atribuida, que la referencia
+duplicada da `409` y no `201`, y que una transición ilegal da `422` con un
+código de error estable.
 
 ```bash
 newman run docs/postman/MOVA.postman_collection.json \
        -e docs/postman/MOVA.postman_environment.json
 ```
 
-O el script equivalente, que además comprueba las garantías del esquema con
-`psql` y el estado de la observabilidad:
+| Carpeta | Demuestra |
+|---|---|
+| 0 · Salud | Que todo está arriba, y que `/health` no es lo mismo que `/readiness` |
+| 1 · Autenticación | Login y el `401` sin credencial |
+| 2 · Reglas de riesgo | Las cuatro decisiones contra `risk-service`, y que el score discrimina |
+| 3 · Comercios | Creación, consulta, `409` por documento duplicado y `404` por inexistente |
+| 4 · Payment Intents | Creación, **reintento idempotente**, historial atribuido, `409` por referencia duplicada, los tres canales |
+| 5 · Conciliación | Lo que hace el worker: listar abiertos, expirar, y los tres códigos del contrato |
+
+**Las carpetas corren en orden y cada una siembra la siguiente.** Desde la
+migración `0006` un pago necesita un comercio real, así que `3 · Comercios` deja
+el `merchant_id` que usan las de abajo. El detalle está en
+[`docs/postman/README.md`](docs/postman/README.md).
+
+### Los ocho casos del enunciado
+
+```bash
+docker compose up -d
+./scripts/casos-de-prueba.sh
+```
+
+Un bloque por cada fila de la tabla *"casos que deben demostrar"*, en el mismo
+orden y con los mismos nombres, para poder irlos marcando mientras corre.
+
+| Caso | Qué hace el script |
+|---|---|
+| **1 · Caso feliz** | Pago por QR, espera la decisión por Kafka y muestra el historial entrada por entrada |
+| **2 · Reintento** | Misma `Idempotency-Key` → mismo intent. Llave nueva + misma referencia → `409` |
+| **3 · Concurrencia** | 10 solicitudes en paralelo, y comprueba que en PostgreSQL quedó **una sola fila** |
+| **4 · Revisión** | 50.000.000 → `UNDER_REVIEW` conservando score y razones |
+| **5 · Rechazo** | Referencia sospechosa **y** comercio `INACTIVE`; verifica que el historial nunca pasó por `APPROVED` |
+| **6 · Expiración** | Un ciclo real del worker, y comprueba que el intent quedó `EXPIRED` con actor |
+| **7 · Fallo de dependencia** | **Detiene `risk-service`**, comprueba el estado seguro, lo levanta y ve cómo se resuelve solo |
+| **8 · Transición ilegal** | `422 INVALID_TRANSITION` desde estados terminales, y `409` al repetir la actual |
+
+El caso 7 es el que más enseña: con el riesgo caído el pago se queda en
+`UNDER_REVIEW` sin `risk_decision` —ninguna aprobación silenciosa— y al volver el
+servicio se resuelve solo, porque Kafka retuvo el evento.
+
+### El recorrido completo, para CI
 
 ```bash
 docker compose up -d
 ./scripts/demo.sh
 ```
 
-| Carpeta | Demuestra |
-|---|---|
-| 0 · Salud | Que todo está arriba, y que `/readiness` distingue de `/health` |
-| 1 · Autenticación | Login y el `401` sin credencial |
-| 2 · Reglas de riesgo | Las tres decisiones contra `risk-service`, y que el score discrimina |
-| 3 · Payment Intents | Creación, **reintento idempotente**, historial atribuido, `409` por referencia duplicada |
-| 4 · Conciliación | Lo que ve el worker, y el `PATCH` pendiente — marcado como informativo para que no rompa la corrida |
+Once pasos que además comprueban las garantías del esquema con `psql` y el
+estado de la observabilidad. Sale distinto de cero si algo falla.
 
 ### Autenticación
 

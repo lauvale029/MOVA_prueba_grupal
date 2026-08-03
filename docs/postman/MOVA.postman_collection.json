@@ -27,7 +27,15 @@
     },
     {
       "key": "merchant_id",
-      "value": "22222222-2222-2222-2222-222222222222"
+      "value": ""
+    },
+    {
+      "key": "merchant_document",
+      "value": ""
+    },
+    {
+      "key": "expirable_id",
+      "value": ""
     }
   ],
   "auth": {
@@ -61,9 +69,43 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{core_url}}/readiness"
+              "raw": "{{core_url}}/readiness",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "readiness"
+              ]
             },
             "description": "Confirma que core-api alcanza Kafka."
+          }
+        },
+        {
+          "name": "risk-service /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{risk_url}}/health",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Vive el proceso. No toca dependencias a proposito: /readiness es el que dice si ademas puede trabajar."
           }
         },
         {
@@ -83,7 +125,13 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{risk_url}}/readiness"
+              "raw": "{{risk_url}}/readiness",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "readiness"
+              ]
             },
             "description": "503 si el consumidor no esta conectado al broker: vivo no es lo mismo que listo."
           }
@@ -108,7 +156,13 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{risk_url}}/metrics"
+              "raw": "{{risk_url}}/metrics",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "metrics"
+              ]
             },
             "description": "Formato Prometheus."
           }
@@ -144,7 +198,16 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/auth/login"
+              "raw": "{{core_url}}/api/v1/auth/login",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
             },
             "description": "Guarda el token en la variable de coleccion: nadie copia y pega tokens a mano.",
             "body": {
@@ -173,6 +236,9 @@
           ],
           "request": {
             "method": "GET",
+            "auth": {
+              "type": "noauth"
+            },
             "header": [
               {
                 "key": "Authorization",
@@ -180,7 +246,15 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents"
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
             },
             "description": "Los endpoints de pagos exigen JWT."
           }
@@ -210,7 +284,7 @@
                   "    pm.expect(s).to.be.below(30);",
                   "});",
                   "pm.test(\"lleva model_version\", () => {",
-                  "    pm.expect(pm.response.json().model_version).to.eql(\"rules-v1\");",
+                  "    pm.expect(pm.response.json().model_version).to.eql(\"rules-v2\");",
                   "});"
                 ]
               }
@@ -225,7 +299,15 @@
               }
             ],
             "url": {
-              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
             },
             "description": "",
             "body": {
@@ -268,7 +350,15 @@
               }
             ],
             "url": {
-              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
             },
             "description": "Sobre el umbral configurable no se rechaza: se manda a revision humana.",
             "body": {
@@ -309,7 +399,15 @@
               }
             ],
             "url": {
-              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
             },
             "description": "La regla mas severa gana aunque el monto sea bajo.",
             "body": {
@@ -345,7 +443,15 @@
               }
             ],
             "url": {
-              "raw": "{{risk_url}}/api/v1/risk-evaluations"
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
             },
             "description": "Se valida en el borde, antes de tocar las reglas.",
             "body": {
@@ -358,11 +464,289 @@
               }
             }
           }
+        },
+        {
+          "name": "Comercio bloqueado → REJECT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"merchant_status INACTIVE rechaza\", () => {",
+                  "    pm.expect(b.decision).to.eql(\"REJECT\");",
+                  "    pm.expect(b.reason_codes).to.include(\"MERCHANT_BLOCKED\");",
+                  "});",
+                  "pm.test(\"satura el score: es un hecho del core, no una sospecha\", () => {",
+                  "    pm.expect(b.score).to.eql(100);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
+            },
+            "description": "Gana a todo lo demas: si el comercio no puede operar, el resto de senales sobra.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"{{$guid}}\",\n  \"merchant_id\": \"{{$guid}}\",\n  \"external_reference\": \"ORDER-BLOQUEADO\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\",\n  \"merchant_status\": \"INACTIVE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Estado desconocido → no bloquea",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"no rechaza por no saber\", () => {",
+                  "    // Un core mas viejo, o un estado nuevo: rechazar por defecto",
+                  "    // tumbaria las aprobaciones en cada despliegue desalineado.",
+                  "    pm.expect(pm.response.json().decision).to.eql(\"APPROVE\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{risk_url}}/api/v1/risk-evaluations",
+              "host": [
+                "{{risk_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "risk-evaluations"
+              ]
+            },
+            "description": "Un estado que este servicio no conoce no puede convertirse en un rechazo.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_intent_id\": \"{{$guid}}\",\n  \"merchant_id\": \"{{$guid}}\",\n  \"external_reference\": \"ORDER-DESCONOCIDO\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\",\n  \"merchant_status\": \"SUSPENDIDO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },
     {
-      "name": "3 · Payment Intents",
+      "name": "3 · Comercios",
+      "description": "Un pago pertenece a un comercio y desde la migracion 0006 hay una clave foranea. Esta carpeta tiene que correr ANTES que Payment Intents: 'Crear comercio' deja el id en merchant_id y los pagos cuelgan de ahi. Con un merchant_id inventado, crear un pago devuelve 404.",
+      "item": [
+        {
+          "name": "Crear comercio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 creado\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"nace ACTIVE\", () => pm.expect(b.status).to.eql(\"ACTIVE\"));",
+                  "pm.test(\"trae id, documento y fechas\", () => {",
+                  "    pm.expect(b.id).to.not.be.empty;",
+                  "    pm.expect(b.document_number).to.not.be.empty;",
+                  "    pm.expect(b.created_at).to.not.be.empty;",
+                  "});",
+                  "// Todo lo que sigue cuelga de este id: sin comercio no hay pago.",
+                  "pm.collectionVariables.set(\"merchant_id\", b.id);",
+                  "pm.collectionVariables.set(\"merchant_document\", b.document_number);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/merchants",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "Nace ACTIVE: el enunciado no define un flujo de activacion.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Comercio Prueba\",\n  \"document_number\": \"900{{$timestamp}}\",\n  \"email\": \"comercio@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Consultar comercio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"es el que se acaba de crear\", () => {",
+                  "    pm.expect(b.id).to.eql(pm.collectionVariables.get(\"merchant_id\"));",
+                  "    pm.expect(b.document_number).to.eql(pm.collectionVariables.get(\"merchant_document\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/merchants/{{merchant_id}}",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "{{merchant_id}}"
+              ]
+            },
+            "description": "Consultar un comercio y su estado — primer punto del alcance obligatorio."
+          }
+        },
+        {
+          "name": "Documento duplicado → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 conflicto\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error con forma constante\", () => {",
+                  "    pm.expect(pm.response.json().error.code).to.eql(\"CONFLICT\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/merchants",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "document_number es unico. No hay Idempotency-Key aqui: el documento ya identifica al comercio de forma natural.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Otro Comercio\",\n  \"document_number\": \"{{merchant_document}}\",\n  \"email\": \"otro@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Comercio inexistente → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"codigo NOT_FOUND\", () => {",
+                  "    pm.expect(pm.response.json().error.code).to.eql(\"NOT_FOUND\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/merchants/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            },
+            "description": "Recurso inexistente: una de las validaciones que exige el enunciado."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · Payment Intents",
       "item": [
         {
           "name": "Crear pago por QR",
@@ -405,7 +789,15 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents"
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
             },
             "description": "Nace en PENDING y pasa a UNDER_REVIEW antes de publicar el evento de riesgo (ADR-0001).",
             "body": {
@@ -447,7 +839,15 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents"
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
             },
             "description": "La garantia final es la restriccion unica en PostgreSQL, no el lock de Redis (ADR-0002).",
             "body": {
@@ -488,7 +888,16 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}"
+              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{intent_id}}"
+              ]
             },
             "description": "Tras unos segundos el riesgo ya respondio por Kafka."
           }
@@ -521,7 +930,17 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}/history"
+              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}/history",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{intent_id}}",
+                "history"
+              ]
             },
             "description": "Actor, motivo, correlacion y fecha en cada entrada."
           }
@@ -552,7 +971,15 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents"
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
             },
             "description": "Llave nueva pero misma referencia: es un duplicado real, no un reintento.",
             "body": {
@@ -592,7 +1019,15 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents"
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
             },
             "description": "",
             "body": {
@@ -627,17 +1062,273 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&page=1&limit=20"
+              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&page=1&limit=20",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "UNDER_REVIEW"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
             },
             "description": "Es la consulta que usa el reconciliation-worker para detectar vencidos."
+          }
+        },
+        {
+          "name": "Canal PAYMENT_LINK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 creado\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"conserva el canal PAYMENT_LINK\", () => {",
+                  "    pm.expect(pm.response.json().channel).to.eql(\"PAYMENT_LINK\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "description": "El enunciado admite tres canales; este es el de link de pago.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-PAYMENT_LINK-{{$timestamp}}\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"PAYMENT_LINK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Canal DATAPHONE_SIMULATED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 creado\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"conserva el canal DATAPHONE_SIMULATED\", () => {",
+                  "    pm.expect(pm.response.json().channel).to.eql(\"DATAPHONE_SIMULATED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "description": "El enunciado admite tres canales; este es el de datafono simulado.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-DATAPHONE_SIMULATED-{{$timestamp}}\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"DATAPHONE_SIMULATED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Canal no admitido → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"no se crea nada\", () => {",
+                  "    pm.expect(pm.response.json().error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "description": "NFC existe en el documento base, pero no en el alcance de esta prueba.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-NFC-{{$timestamp}}\",\n  \"amount_minor\": 150000,\n  \"currency\": \"COP\",\n  \"channel\": \"NFC\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Intent inexistente → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"codigo NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"NOT_FOUND\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            },
+            "description": "Recurso inexistente: una de las validaciones que exige el enunciado."
           }
         }
       ]
     },
     {
-      "name": "4 · Conciliacion",
-      "description": "El worker hace esto mismo cada vez que llega un tick del scheduler.",
+      "name": "5 · Conciliacion",
+      "description": "El worker hace esto mismo cada vez que llega un tick del scheduler: lista los abiertos, filtra por expires_at y pide la transicion. Nunca escribe en la base — la maquina de estados y el historial son del core.",
       "item": [
+        {
+          "name": "Crear uno que se quede abierto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 creado\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"expirable_id\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "description": "Monto alto para que el riesgo lo deje en UNDER_REVIEW: desde ahi si se puede expirar, desde APPROVED no.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"external_reference\": \"ORDER-EXPIRA-{{$timestamp}}\",\n  \"amount_minor\": 50000000,\n  \"currency\": \"COP\",\n  \"channel\": \"QR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
           "name": "Listar abiertos (lo que ve el worker)",
           "event": [
@@ -660,31 +1351,41 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&limit=100"
+              "raw": "{{core_url}}/api/v1/payment-intents?status=UNDER_REVIEW&limit=100",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "UNDER_REVIEW"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
             },
             "description": "El worker filtra despues por expires_at. La ventana la define el core, no el worker."
           }
         },
         {
-          "name": "[PENDIENTE] Expirar un intent",
+          "name": "Expirar un intent → 200",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const implementado = pm.response.code !== 404 && pm.response.code !== 405;",
-                  "pm.test(\"[informativo] el endpoint de transicion existe\", () => {",
-                  "    if (!implementado) {",
-                  "        console.log(\"PENDIENTE: falta PATCH /payment-intents/{id}/status en core-api\");",
-                  "    }",
-                  "    pm.expect(true).to.be.true;   // no rompe la corrida: es un pendiente conocido",
-                  "});",
-                  "if (implementado) {",
-                  "    pm.test(\"200 o 409 y queda EXPIRED\", () => {",
-                  "        pm.expect(pm.response.code).to.be.oneOf([200, 409]);",
-                  "    });",
-                  "}"
+                  "pm.test(\"200 y queda EXPIRED\", () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().status).to.eql(\"EXPIRED\");",
+                  "});"
                 ]
               }
             }
@@ -702,9 +1403,19 @@
               }
             ],
             "url": {
-              "raw": "{{core_url}}/api/v1/payment-intents/{{intent_id}}/status"
+              "raw": "{{core_url}}/api/v1/payment-intents/{{expirable_id}}/status",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{expirable_id}}",
+                "status"
+              ]
             },
-            "description": "PENDIENTE: core-api no expone este endpoint todavia. El worker lo consume y distingue el 404 de una caida (StatusEndpointMissing). Contrato completo en docs/openapi/core-api-v1.yaml.",
+            "description": "Lo que pide el worker al conciliar. El core valida la transicion contra su tabla y escribe el historial con actor.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"status\": \"EXPIRED\",\n  \"reason\": \"vencido sin resolverse dentro de la ventana\"\n}",
@@ -714,6 +1425,148 @@
                 }
               }
             }
+          }
+        },
+        {
+          "name": "Repetir la transicion → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 porque ya estaba ahi\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Correlation-Id",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{expirable_id}}/status",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{expirable_id}}",
+                "status"
+              ]
+            },
+            "description": "Otro proceso lo cerro entre el listado y esta llamada. Para el worker es EXITO, no un fallo: el intent ya esta donde queria dejarlo.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"EXPIRED\",\n  \"reason\": \"otra vez\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Transicion ilegal desde terminal → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 con error de dominio consistente\", () => {",
+                  "    pm.response.to.have.status(422);",
+                  "    pm.expect(pm.response.json().error.code).to.eql(\"INVALID_TRANSITION\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Correlation-Id",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{expirable_id}}/status",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{expirable_id}}",
+                "status"
+              ]
+            },
+            "description": "EXPIRED es terminal. El worker NO reintenta un 422: daria 422 las tres veces.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"PENDING\",\n  \"reason\": \"volver atras no se puede\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Historial del intent expirado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const h = pm.response.json();",
+                  "pm.test(\"la ultima entrada es la expiracion, atribuida\", () => {",
+                  "    const ultima = h[h.length - 1];",
+                  "    pm.expect(ultima.new_status).to.eql(\"EXPIRED\");",
+                  "    pm.expect(ultima.changed_by).to.not.be.empty;",
+                  "    pm.expect(ultima.reason).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{core_url}}/api/v1/payment-intents/{{expirable_id}}/history",
+              "host": [
+                "{{core_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{expirable_id}}",
+                "history"
+              ]
+            },
+            "description": "La expiracion queda registrada como cualquier otro cambio, con actor y motivo."
           }
         }
       ]
