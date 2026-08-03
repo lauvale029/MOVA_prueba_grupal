@@ -63,6 +63,9 @@ services:
     restart: "no"
     volumes:
       - ./migrations:/migrations:ro
+    # Conecta como el superusuario de arranque, no como mova_owner: la
+    # migración 0001 es la que CREATE ROLE mova_owner — en una base
+    # nueva ese rol todavía no existe cuando arranca esta sesión.
     command:
       - "-path=/migrations"
       - "-database=postgres://${DB_USER:-mova}:${DB_PASSWORD:-mova}@postgres:5432/${DB_NAME:-mova_orchestrator}?sslmode=disable"
@@ -79,12 +82,20 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgres://${DB_USER:-mova}:${DB_PASSWORD:-mova}@postgres:5432/${DB_NAME:-mova_orchestrator}?sslmode=disable
+      DATABASE_URL: postgres://mova_app:mova_app@postgres:5432/${DB_NAME:-mova_orchestrator}?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: kafka:29092
       PORT: "8080"
     ports:
       - "${PORT:-8080}:8080"
+    healthcheck:
+      # 127.0.0.1, no localhost: en Alpine, wget resuelve "localhost" a
+      # ::1 primero, y la app solo escucha en IPv4 — con localhost el
+      # healthcheck queda "unhealthy" para siempre.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
       db-migrator:
         condition: service_completed_successfully
@@ -150,7 +161,7 @@ services:
       - "${RECONCILIATION_METRICS_PORT:-8082}:8082"
     depends_on:
       core-api:
-        condition: service_started
+        condition: service_healthy
       kafka:
         condition: service_healthy
     restart: unless-stopped
