@@ -175,13 +175,18 @@ func (fakeLocker) Acquire(_ context.Context, _ string) (func(), bool) {
 type fakeRiskPublisher struct {
 	mu     sync.Mutex
 	events []application.RiskEvaluationRequested
+	// result, si no es nil, simula el camino HTTP directo del circuit
+	// breaker (ADR-0008): Publish devuelve la decisión ya resuelta, en
+	// vez de nil (que es lo que pasa cuando el evento se publicó bien a
+	// Kafka y la decisión llega después, de forma asíncrona).
+	result *application.RiskEvaluationResult
 }
 
-func (p *fakeRiskPublisher) Publish(_ context.Context, event application.RiskEvaluationRequested) error {
+func (p *fakeRiskPublisher) Publish(_ context.Context, event application.RiskEvaluationRequested) (*application.RiskEvaluationResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, event)
-	return nil
+	return p.result, nil
 }
 
 func (p *fakeRiskPublisher) publishCount() int {
@@ -214,6 +219,29 @@ func TestCreate_Valid(t *testing.T) {
 	require.Len(t, entries, 2, "creado + enviado a revisión")
 	assert.Equal(t, domain.StatusPending, entries[0].NewStatus)
 	assert.Equal(t, domain.StatusUnderReview, entries[1].NewStatus)
+}
+
+// TestCreate_AppliesImmediateResult_WhenPublisherFallsBackToHTTP cierra
+// el ADR-0008: si Kafka mismo falló, RiskRequestPublisher.Publish
+// resuelve la decisión ya, en el mismo request (circuit breaker → HTTP
+// directo), y Create debe aplicarla de inmediato en vez de esperar un
+// evento que nunca se va a publicar.
+func TestCreate_AppliesImmediateResult_WhenPublisherFallsBackToHTTP(t *testing.T) {
+	svc, _, history, _, publisher := newServiceForTest()
+	publisher.result = &application.RiskEvaluationResult{
+		Decision: domain.RiskApprove, Score: 5, ReasonCodes: []string{"LOW_RISK"}, ModelVersion: "rules-v2",
+	}
+
+	pi, err := svc.Create(context.Background(), "merchant-1", "order-1", 15_000_00, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusApproved, pi.Status, "se resuelve ya, sin esperar un evento de Kafka que nunca se publicó")
+	require.NotNil(t, pi.RiskDecision)
+	assert.Equal(t, domain.RiskApprove, *pi.RiskDecision)
+
+	entries, _ := history.ListByPaymentIntentID(context.Background(), pi.ID)
+	require.Len(t, entries, 3, "creado + enviado a revisión + resultado de riesgo")
+	assert.Equal(t, domain.StatusApproved, entries[2].NewStatus)
+	assert.Contains(t, entries[2].Reason, "HTTP directo", "el historial debe distinguir el camino de emergencia del normal por Kafka")
 }
 
 // TestCreate_PublishesMerchantStatusAndRecentIntents cierra el issue #14:

@@ -5,6 +5,8 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 
@@ -12,6 +14,14 @@ import (
 )
 
 const TopicRiskEvaluationRequested = "risk.evaluation.requested"
+
+// Umbral más bajo que el del reconciliation-worker (10/60s): esto corre
+// en el camino síncrono de creación de un pago, no en un ciclo de fondo,
+// así que conviene fallar rápido hacia el HTTP directo (ver ADR-0008).
+const (
+	breakerFailureThreshold = 3
+	breakerResetTimeout     = 30 * time.Second
+)
 
 type riskRequestedMessage struct {
 	PaymentIntentID       string `json:"payment_intent_id"`
@@ -25,13 +35,25 @@ type riskRequestedMessage struct {
 	MerchantRecentIntents int    `json:"merchant_recent_intents"`
 }
 
-// RiskRequestPublisher implementa application.RiskRequestPublisher
-// publicando a TopicRiskEvaluationRequested.
-type RiskRequestPublisher struct {
-	writer *kafkago.Writer
+// riskFallback es lo mínimo que necesita el camino de emergencia — lo
+// cumple *riskhttp.Client sin que este paquete dependa de él (evita el
+// ciclo: riskhttp ya importa application).
+type riskFallback interface {
+	Evaluate(ctx context.Context, event application.RiskEvaluationRequested) (*application.RiskEvaluationResult, error)
 }
 
-func NewRiskRequestPublisher(brokers []string) *RiskRequestPublisher {
+// RiskRequestPublisher implementa application.RiskRequestPublisher
+// publicando a TopicRiskEvaluationRequested. Si Kafka mismo falla varias
+// veces seguidas, el circuit breaker se abre y las siguientes llamadas
+// caen directo al HTTP síncrono de risk-service, sin gastar el timeout
+// de Kafka (ver ADR-0008).
+type RiskRequestPublisher struct {
+	writer   *kafkago.Writer
+	breaker  *circuitBreaker
+	fallback riskFallback
+}
+
+func NewRiskRequestPublisher(brokers []string, fallback riskFallback) *RiskRequestPublisher {
 	return &RiskRequestPublisher{
 		writer: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
@@ -40,12 +62,32 @@ func NewRiskRequestPublisher(brokers []string) *RiskRequestPublisher {
 			RequiredAcks:           kafkago.RequireOne,
 			AllowAutoTopicCreation: true,
 		},
+		breaker:  newCircuitBreaker(breakerFailureThreshold, breakerResetTimeout),
+		fallback: fallback,
 	}
 }
 
 var _ application.RiskRequestPublisher = (*RiskRequestPublisher)(nil)
 
-func (p *RiskRequestPublisher) Publish(ctx context.Context, event application.RiskEvaluationRequested) error {
+func (p *RiskRequestPublisher) Publish(ctx context.Context, event application.RiskEvaluationRequested) (*application.RiskEvaluationResult, error) {
+	if p.breaker.allow() {
+		if err := p.publishToKafka(ctx, event); err == nil {
+			p.breaker.onSuccess()
+			return nil, nil
+		}
+		p.breaker.onFailure()
+	}
+
+	// Kafka no disponible (o el breaker ya lo sabe): se resuelve ya,
+	// síncrono, para no dejar el intent esperando un evento que nunca
+	// va a llegar.
+	if p.fallback == nil {
+		return nil, errors.New("kafka no disponible y no hay respaldo HTTP configurado")
+	}
+	return p.fallback.Evaluate(ctx, event)
+}
+
+func (p *RiskRequestPublisher) publishToKafka(ctx context.Context, event application.RiskEvaluationRequested) error {
 	payload, err := json.Marshal(riskRequestedMessage{
 		PaymentIntentID:       event.PaymentIntentID,
 		MerchantID:            event.MerchantID,

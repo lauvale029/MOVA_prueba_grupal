@@ -28,7 +28,7 @@ func TestEnsureTopics_IdempotentAcrossCalls(t *testing.T) {
 }
 
 func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
-	publisher := kafka.NewRiskRequestPublisher(brokers)
+	publisher := kafka.NewRiskRequestPublisher(brokers, nil)
 	defer publisher.Close()
 
 	// El tópico debe existir ANTES de crear el Reader: con GroupID, el
@@ -42,7 +42,9 @@ func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
 		Currency: "COP", Channel: "QR", CorrelationID: "corr-1",
 		MerchantStatus: "ACTIVE", MerchantRecentIntents: 3,
 	}
-	require.NoError(t, publisher.Publish(context.Background(), event))
+	result, err := publisher.Publish(context.Background(), event)
+	require.NoError(t, err)
+	assert.Nil(t, result, "Kafka disponible: la decisión llega después, no en el mismo request")
 
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers: brokers,
@@ -78,8 +80,8 @@ func (noopLocker) Acquire(_ context.Context, _ string) (func(), bool) { return f
 
 type noopPublisher struct{}
 
-func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequested) error {
-	return nil
+func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequested) (*application.RiskEvaluationResult, error) {
+	return nil, nil
 }
 
 // fakePaymentIntentRepository e fakeHistoryRepository son solo para probar

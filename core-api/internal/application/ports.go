@@ -53,7 +53,7 @@ type IdempotencyLocker interface {
 // RiskEvaluationRequested es el evento que se publica a Kafka para que el
 // Risk Service evalúe un PaymentIntent (ver ADR-0001, contrato Go/Python).
 // MerchantStatus y MerchantRecentIntents son opcionales (ver ADR-0004):
-// core-api es dueño de ambos datos, pero risk-service todavía los ignora.
+// core-api es dueño de ambos datos; risk-service los usa si vienen.
 type RiskEvaluationRequested struct {
 	PaymentIntentID       string
 	MerchantID            string
@@ -66,10 +66,25 @@ type RiskEvaluationRequested struct {
 	MerchantRecentIntents int
 }
 
-// RiskRequestPublisher publica el evento de evaluación de riesgo. No
-// espera respuesta: el resultado llega después por otro tópico,
-// consumido por la infraestructura y aplicado vía
+// RiskEvaluationResult es la decisión que llega YA, en el mismo request,
+// cuando Publish tuvo que caer al camino HTTP directo porque Kafka mismo
+// falló (ver ADR-0008) — nil cuando el evento se publicó a Kafka con
+// éxito, ya que ahí la decisión llega después de forma asíncrona,
+// consumida por la infraestructura y aplicada vía
 // PaymentIntentService.ApplyRiskResult.
-type RiskRequestPublisher interface {
-	Publish(ctx context.Context, event RiskEvaluationRequested) error
+type RiskEvaluationResult struct {
+	Decision     domain.RiskDecision
+	Score        int
+	ReasonCodes  []string
+	ModelVersion string
 }
+
+// RiskRequestPublisher publica el evento de evaluación de riesgo.
+type RiskRequestPublisher interface {
+	Publish(ctx context.Context, event RiskEvaluationRequested) (*RiskEvaluationResult, error)
+}
+
+// ChangedByRiskService identifica al Risk Service como autor en el
+// historial, sin importar si la decisión llegó por Kafka o por el
+// camino HTTP directo (ver ADR-0008).
+const ChangedByRiskService = "risk-service"
