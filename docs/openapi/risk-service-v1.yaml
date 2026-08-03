@@ -93,6 +93,15 @@ components:
           type: string
           title: Channel
           default: ''
+        merchant_status:
+          type: string
+          title: Merchant Status
+          default: ''
+        merchant_recent_intents:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Merchant Recent Intents
       type: object
       required:
       - payment_intent_id

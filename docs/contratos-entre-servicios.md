@@ -67,7 +67,9 @@ sequenceDiagram
   "amount_minor": 15000000,
   "currency": "COP",
   "channel": "QR",
-  "correlation_id": "33333333-3333-3333-3333-333333333333"
+  "correlation_id": "33333333-3333-3333-3333-333333333333",
+  "merchant_status": "ACTIVE",
+  "merchant_recent_intents": 3
 }
 ```
 
@@ -77,6 +79,12 @@ sequenceDiagram
 | `external_reference` | No | Vacío se trata como sospechoso |
 | `currency` · `channel` | No | Por defecto `COP` y vacío |
 | `correlation_id` | No | Se propaga si viene |
+| `merchant_status` | No | `INACTIVE` produce `REJECT`. **Ausente o desconocido no bloquea** |
+| `merchant_recent_intents` | No | La cuenta del core manda sobre la ventana propia del riesgo |
+
+Los dos últimos se añadieron después del contrato original y son opcionales a
+propósito: un `core-api` anterior no los manda y el riesgo debe seguir
+decidiendo. Ninguno de los dos convierte "no sé" en un rechazo.
 
 ### Vuelta — `risk.evaluation.completed`
 
@@ -86,7 +94,7 @@ sequenceDiagram
   "decision": "APPROVE",
   "score": 12,
   "reason_codes": ["LOW_RISK"],
-  "model_version": "rules-v1"
+  "model_version": "rules-v2"
 }
 ```
 

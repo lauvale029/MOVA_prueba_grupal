@@ -33,8 +33,30 @@ def test_parsea_el_payload_del_contrato() -> None:
 
 def test_un_campo_extra_no_rompe_nada() -> None:
     """core-api puede anadir campos opcionales sin coordinarse con nosotros."""
-    payload = {**EVENTO_DEL_ADR, "merchant_status": "ACTIVE"}
+    payload = {**EVENTO_DEL_ADR, "un_campo_que_no_conocemos": True}
     assert parse_requested(json.dumps(payload).encode()).merchant_id
+
+
+def test_lee_el_contexto_del_comercio_cuando_viene() -> None:
+    payload = {**EVENTO_DEL_ADR, "merchant_status": "INACTIVE", "merchant_recent_intents": 7}
+    data = parse_requested(json.dumps(payload).encode())
+
+    assert data.merchant_status == "INACTIVE"
+    assert data.merchant_recent_intents == 7
+
+
+def test_sin_contexto_del_comercio_no_asume_nada() -> None:
+    """Un core anterior a estos campos no manda ninguno de los dos. El
+    evento sigue siendo valido y no se inventa un estado."""
+    data = parse_requested(json.dumps(EVENTO_DEL_ADR).encode())
+
+    assert data.merchant_status == ""
+    assert data.merchant_recent_intents is None
+
+
+def test_un_contador_con_basura_se_ignora_en_vez_de_tumbar_el_evento() -> None:
+    payload = {**EVENTO_DEL_ADR, "merchant_recent_intents": "muchos"}
+    assert parse_requested(json.dumps(payload).encode()).merchant_recent_intents is None
 
 
 @pytest.mark.parametrize("faltante", ["payment_intent_id", "merchant_id", "amount_minor"])

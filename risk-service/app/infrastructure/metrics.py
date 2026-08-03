@@ -43,6 +43,16 @@ velocity_tracked_merchants = Gauge(
     registry=REGISTRY,
 )
 
+# source="core" o "local". Si "local" deja de ser residual, core-api dejo
+# de mandar merchant_recent_intents y estamos decidiendo con una cuenta
+# por instancia sin que nada mas lo delate.
+velocity_source_total = Counter(
+    "risk_velocity_source_total",
+    "De donde salio la cuenta de intents recientes usada para decidir",
+    ["source"],
+    registry=REGISTRY,
+)
+
 consumer_up = Gauge(
     "risk_consumer_up",
     "1 si el consumidor de Kafka esta conectado",

@@ -107,7 +107,31 @@ deja de ocupar espacio.
 - Un reinicio deja pasar hasta `VELOCITY_MAX_RECENT` intents antes de volver a
   disparar la regla. Se acepta: es un rechazo de menos, no una aprobación
   silenciosa, y ninguna decisión incorrecta se persiste.
-- **La regla de comercio bloqueado no se puede implementar.** Necesitaría un
-  `merchant_status` que el evento no trae y que `core-api` no expone. Se
-  propone añadirlo al contrato junto con `merchant_recent_intents`; hasta
-  entonces la regla no existe, y eso es preferible a inventarse un valor.
+- **La regla de comercio bloqueado no se podía implementar.** Necesitaría un
+  `merchant_status` que el evento no traía y que `core-api` no exponía. Se
+  propuso añadirlo al contrato junto con `merchant_recent_intents`; hasta
+  entonces la regla no existía, y eso era preferible a inventarse un valor.
+
+## Resuelto después
+
+`core-api` publica los dos campos desde el 2 de agosto de 2026, y el Risk
+Service los consume desde el día siguiente (issue #28). Lo que cambió:
+
+| | Antes | Ahora |
+|---|---|---|
+| Comercio bloqueado | Inevaluable | `MERCHANT_BLOCKED` → `REJECT`, score 100 |
+| Cuenta de velocidad | Ventana propia, por instancia | La del core cuando viene; la propia como respaldo |
+
+**La ventana en memoria no se borró.** Los dos campos son opcionales, así que
+un `core-api` anterior no los manda y este servicio tiene que seguir
+decidiendo. Se sigue alimentando siempre, aunque mande la cuenta del core,
+para que el respaldo esté caliente si el campo deja de llegar y no arranque de
+cero justo cuando hace falta.
+
+`risk_velocity_source_total{source}` dice cuál se usó. Si `local` deja de ser
+residual, `core-api` dejó de mandar el campo y estaríamos decidiendo con una
+cuenta por instancia **sin que ninguna otra señal lo delate**.
+
+La decisión de fondo de este ADR no cambia: el Risk Service sigue sin base de
+datos y sin credenciales. El dato llega por el evento, que es el único canal
+que tiene.

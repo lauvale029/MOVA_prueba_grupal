@@ -178,7 +178,9 @@ persistente**, y no conoce a `core-api`: solo intercambia eventos.
 
 ```mermaid
 flowchart LR
-    req[["risk.evaluation.requested"]] --> r1{"¿referencia<br/>sospechosa?"}
+    req[["risk.evaluation.requested"]] --> r0{"¿comercio<br/>bloqueado?"}
+    r0 -->|"si"| rej0["REJECT<br/>MERCHANT_BLOCKED"]
+    r0 -->|"no"| r1{"¿referencia<br/>sospechosa?"}
     r1 -->|"si"| rej["REJECT<br/>SUSPICIOUS_REFERENCE"]
     r1 -->|"no"| r2{"¿velocidad<br/>anormal?"}
     r2 -->|"si"| rej2["REJECT<br/>ABNORMAL_VELOCITY"]
@@ -186,14 +188,18 @@ flowchart LR
     r3 -->|"si"| rev["REVIEW<br/>AMOUNT_ABOVE_REVIEW_THRESHOLD"]
     r3 -->|"no"| app["APPROVE<br/>LOW_RISK"]
 
-    rej --> out[["risk.evaluation.completed"]]
+    rej0 --> out[["risk.evaluation.completed"]]
+    rej --> out
     rej2 --> out
     rev --> out
     app --> out
 ```
 
-Se evalúan **en orden de severidad y la primera que dispara manda**: una
-referencia sospechosa se rechaza aunque el monto sea bajo.
+Se evalúan **en orden de severidad y la primera que dispara manda**: un comercio
+bloqueado se rechaza aunque todo lo demás esté limpio, y una referencia
+sospechosa se rechaza aunque el monto sea bajo. Un `merchant_status` ausente o
+desconocido **no bloquea**: rechazar por no saber tumbaría las aprobaciones cada
+vez que los dos lados se desalinean.
 
 El `score` no es un modelo: es una suma acotada a `[0,100]` que se puede
 explicar en voz alta — 5 de base, hasta 20 graduales por monto, 55 si supera el
@@ -201,16 +207,18 @@ umbral, 95 si disparó una regla bloqueante. El componente gradual existe para
 que **discrimine dentro de una misma decisión**: dos pagos aprobados de 1.000 y
 de 90.000 COP no deberían tener el mismo número.
 
-`model_version` (`rules-v1`) viaja en cada respuesta y `core-api` la persiste: si
+`model_version` (`rules-v2`) viaja en cada respuesta y `core-api` la persiste: si
 mañana cambian los umbrales, se sabe con qué versión se decidió cada pago
-histórico.
+histórico. `v2` añadió la regla de comercio bloqueado.
 
-**La velocidad se cuenta sin tocar la base.** El dato no viene en el evento, así
-que el servicio lo deriva de los eventos que ya consume, sobre una ventana
-deslizante en memoria. Dos detalles que no son opcionales: el registro es
-idempotente por `payment_intent_id` —Kafka entrega al menos una vez y una
-reentrega inventaría un rechazo— y el intent que se evalúa no se cuenta a sí
-mismo ([ADR-0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md)).
+**La velocidad se cuenta sin tocar la base.** Manda el `merchant_recent_intents`
+que publica `core-api` —exacto con varias réplicas y a prueba de reinicios—, y
+si el campo no viene se usa una ventana deslizante en memoria alimentada por los
+eventos que el servicio ya consume. Las dos fuentes usan la misma semántica: el
+intent que se evalúa no se cuenta a sí mismo. El registro local es idempotente
+por `payment_intent_id`, porque Kafka entrega al menos una vez y una reentrega
+inventaría un rechazo
+([ADR-0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md)).
 
 → [README completo](risk-service/README.md) · [OpenAPI](docs/openapi/risk-service-v1.yaml)
 
@@ -630,11 +638,11 @@ Temporales, explícitamente marcados con `TODO` en el código:
   `reconciliation-worker` para cerrar los vencidos. Contrato y
   comportamiento esperado arriba, en [Endpoints](#endpoints). Es lo único
   que bloquea el camino completo de conciliación.
-- **`merchant_status` y `merchant_recent_intents` en el evento de riesgo**:
-  sin el primero no se puede evaluar la regla de comercio bloqueado; el
-  segundo dejaría la velocidad del lado del core, que es su dueño natural.
-  Hoy el Risk Service la deriva del propio flujo de eventos (ver
-  [ADR-0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md)).
+- **La ventana de velocidad en memoria del Risk Service**: ya no decide
+  —manda el `merchant_recent_intents` que publica `core-api`— pero se
+  mantiene como respaldo porque el campo es opcional. Se puede retirar el
+  día que se decida que el contrato lo exige
+  ([ADR-0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md)).
 
 ## Flujo de trabajo con Git
 
