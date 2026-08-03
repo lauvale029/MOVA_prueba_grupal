@@ -318,6 +318,59 @@ func TestApplyRiskResult_UnknownIntent(t *testing.T) {
 	assert.ErrorIs(t, err, application.ErrNotFound)
 }
 
+// TestUpdateStatus_PendingToExpired_Success cierra el issue #11: es la
+// transición que usa el reconciliation-worker para vencer intents.
+func TestUpdateStatus_PendingToExpired_Success(t *testing.T) {
+	svc, payments, history, _, _ := newServiceForTest()
+	ctx := context.Background()
+
+	// Sembrado directo en el repo (no vía svc.Create) para quedar en
+	// PENDING: Create mueve a UNDER_REVIEW de inmediato.
+	pi, err := domain.NewPaymentIntent("merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "")
+	require.NoError(t, err)
+	require.NoError(t, payments.Create(ctx, pi))
+
+	updated, err := svc.UpdateStatus(ctx, pi.ID, domain.StatusExpired, "vencido sin resolverse", "reconciliation-worker")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusExpired, updated.Status)
+
+	entries, _ := history.ListByPaymentIntentID(ctx, pi.ID)
+	require.Len(t, entries, 1)
+	assert.Equal(t, domain.StatusPending, entries[0].PreviousStatus)
+	assert.Equal(t, domain.StatusExpired, entries[0].NewStatus)
+	assert.Equal(t, "reconciliation-worker", entries[0].ChangedBy)
+}
+
+func TestUpdateStatus_AlreadyAtTarget_ReturnsConflict(t *testing.T) {
+	svc, _, _, _, _ := newServiceForTest()
+	ctx := context.Background()
+
+	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err) // ya queda en UNDER_REVIEW
+
+	_, err = svc.UpdateStatus(ctx, pi.ID, domain.StatusUnderReview, "reintento", "reconciliation-worker")
+	assert.ErrorIs(t, err, application.ErrConflict)
+}
+
+func TestUpdateStatus_InvalidTransition_ReturnsUnprocessable(t *testing.T) {
+	svc, _, _, _, _ := newServiceForTest()
+	ctx := context.Background()
+
+	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+	_, err = svc.ApplyRiskResult(ctx, pi.ID, domain.RiskApprove, 10, nil, "rules-v1", "risk-service")
+	require.NoError(t, err) // APPROVED es terminal
+
+	_, err = svc.UpdateStatus(ctx, pi.ID, domain.StatusExpired, "vencido", "reconciliation-worker")
+	assert.ErrorIs(t, err, domain.ErrInvalidTransition)
+}
+
+func TestUpdateStatus_UnknownIntent(t *testing.T) {
+	svc, _, _, _, _ := newServiceForTest()
+	_, err := svc.UpdateStatus(context.Background(), "no-existe", domain.StatusExpired, "vencido", "reconciliation-worker")
+	assert.ErrorIs(t, err, application.ErrNotFound)
+}
+
 func TestGet_NotFound(t *testing.T) {
 	svc, _, _, _, _ := newServiceForTest()
 	_, err := svc.Get(context.Background(), "no-existe")

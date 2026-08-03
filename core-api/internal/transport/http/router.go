@@ -23,6 +23,7 @@ func NewRouter(paymentIntentHandler *PaymentIntentHandler, merchantHandler *Merc
 	protected.Get("/payment-intents", paymentIntentHandler.List)
 	protected.Get("/payment-intents/:payment_intent_id", paymentIntentHandler.Get)
 	protected.Get("/payment-intents/:payment_intent_id/history", paymentIntentHandler.History)
+	protected.Patch("/payment-intents/:payment_intent_id/status", paymentIntentHandler.UpdateStatus)
 
 	return app
 }

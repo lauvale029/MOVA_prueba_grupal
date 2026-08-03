@@ -205,6 +205,41 @@ func (s *PaymentIntentService) ApplyRiskResult(
 	return pi, nil
 }
 
+// UpdateStatus aplica una transición manual (hoy solo la usa el
+// reconciliation-worker para expirar intents vencidos). Si el intent ya
+// está en el estado pedido, es ErrConflict (409, el worker lo cuenta como
+// éxito); una transición que la tabla del dominio no permite es
+// domain.ErrInvalidTransition (422) — se distingue ANTES de llamar a
+// ChangeStatus, que por sí sola no separa los dos casos.
+func (s *PaymentIntentService) UpdateStatus(ctx context.Context, paymentIntentID string, next domain.Status, reason, changedBy string) (*domain.PaymentIntent, error) {
+	pi, err := s.payments.GetByID(ctx, paymentIntentID)
+	if err != nil {
+		return nil, err
+	}
+
+	if pi.Status == next {
+		return nil, ErrConflict
+	}
+
+	previousStatus := pi.Status
+	if err := pi.ChangeStatus(next); err != nil {
+		return nil, err
+	}
+
+	err = s.uow.Execute(ctx, func(txCtx context.Context) error {
+		if err := s.payments.Update(txCtx, pi); err != nil {
+			return err
+		}
+		h := domain.NewPaymentIntentStatusHistory(pi.ID, previousStatus, pi.Status, reason, changedBy, pi.CorrelationID)
+		return s.history.Create(txCtx, h)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return pi, nil
+}
+
 func (s *PaymentIntentService) Get(ctx context.Context, id string) (*domain.PaymentIntent, error) {
 	return s.payments.GetByID(ctx, id)
 }

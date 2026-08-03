@@ -162,7 +162,22 @@ probar_sql "resolver sin decisión de riesgo rechazado" \
 probar_sql "la aplicación no puede borrar" \
   "SET ROLE mova_app; DELETE FROM payments.payment_intents;" "permission denied"
 
-paso "10 · Observabilidad"
+paso "10 · PATCH de estado (worker de conciliación)"
+# $SEED quedó en PENDING (paso 9, nunca se publicó a Kafka): sirve para
+# probar la transición real sin carreras contra risk-service.
+COD=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$CORE/api/v1/payment-intents/$SEED/status" "${AUTH[@]}" \
+  -H 'content-type: application/json' -d '{"status":"EXPIRED","reason":"vencido sin resolverse dentro de la ventana"}')
+[ "$COD" = "200" ] && verde "PENDING → EXPIRED (worker) → 200" || rojo "esperaba 200 y dio $COD"
+
+COD=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$CORE/api/v1/payment-intents/$SEED/status" "${AUTH[@]}" \
+  -H 'content-type: application/json' -d '{"status":"EXPIRED","reason":"reintento del worker"}')
+[ "$COD" = "409" ] && verde "ya estaba en ese estado → 409 (el worker lo cuenta como éxito)" || rojo "esperaba 409 y dio $COD"
+
+COD=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$CORE/api/v1/payment-intents/$ID/status" "${AUTH[@]}" \
+  -H 'content-type: application/json' -d '{"status":"EXPIRED","reason":"no debería aplicar"}')
+[ "$COD" = "422" ] && verde "transición inválida ($EST → EXPIRED) → 422" || rojo "esperaba 422 y dio $COD"
+
+paso "11 · Observabilidad"
 curl -s "$RISK/metrics" | grep -q "risk_evaluations_total" \
   && verde "risk-service expone métricas" || rojo "faltan métricas de riesgo"
 curl -s localhost:8082/metrics | grep -q "reconciliation_" \
