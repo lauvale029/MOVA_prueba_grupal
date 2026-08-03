@@ -59,11 +59,12 @@ func main() {
 	merchantService := application.NewMerchantService(merchantRepo)
 	merchantHandler := transporthttp.NewMerchantHandler(merchantService)
 
-	// TODO: reemplazar por el lock real de Redis (ver README, sección de
-	// pendientes) — Fase E.
+	redisClient := redisinfra.NewClient(mustGetenv("REDIS_ADDR"))
+	defer redisClient.Close()
+
 	payments := postgresinfra.NewPaymentIntentRepository(pool)
 	history := postgresinfra.NewPaymentIntentStatusHistoryRepository(pool)
-	locker := redisinfra.NoopIdempotencyLocker{}
+	locker := redisinfra.NewIdempotencyLocker(redisClient)
 	uow := postgresinfra.NewUnitOfWork(pool)
 	riskPublisher := kafkainfra.NewRiskRequestPublisher(brokers)
 	defer riskPublisher.Close()
