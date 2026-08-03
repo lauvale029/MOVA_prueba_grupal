@@ -20,8 +20,8 @@ const (
 
 type noopPublisher struct{}
 
-func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequested) error {
-	return nil
+func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequested) (*application.RiskEvaluationResult, error) {
+	return nil, nil
 }
 
 type okPinger struct{}

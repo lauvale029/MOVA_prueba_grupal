@@ -399,6 +399,7 @@ Ver [`.env.example`](.env.example). Resumen:
 | `DB_*`, `DATABASE_URL` | Postgres — `core-api` conecta como `mova_app`, `db-migrator` como el superusuario de arranque (ver ADR-0007) |
 | `REDIS_PORT`, `REDIS_ADDR` | Redis — lock best-effort de idempotencia (ver ADR-0002) |
 | `KAFKA_BROKERS` | Broker(s) de Kafka, separados por coma |
+| `RISK_SERVICE_URL` | A dónde llamar directo si Kafka mismo falla (circuit breaker, ADR-0008) |
 | `JWT_SECRET`, `JWT_EXPIRATION_MINUTES`, `AUTH_USERNAME`, `AUTH_PASSWORD` | Autenticación (ver PR de auth) |
 | `REVIEW_AMOUNT_MINOR`, `VELOCITY_*`, `SUSPICIOUS_REFERENCE_PREFIXES` | Umbrales de las reglas de riesgo |
 | `RECONCILIATION_INTERVAL_SECONDS` | Cada cuánto corre un ciclo de conciliación |
@@ -490,7 +491,9 @@ orden y con los mismos nombres, para poder irlos marcando mientras corre.
 
 El caso 7 es el que más enseña: con el riesgo caído el pago se queda en
 `UNDER_REVIEW` sin `risk_decision` —ninguna aprobación silenciosa— y al volver el
-servicio se resuelve solo, porque Kafka retuvo el evento.
+servicio se resuelve solo, porque Kafka retuvo el evento (y, si en cambio fuera
+Kafka mismo el que estuviera caído, se resuelve igual de rápido por el camino
+HTTP directo del circuit breaker — ver ADR-0008).
 
 ### El recorrido completo, para CI
 
@@ -574,17 +577,25 @@ go test -tags=integration ./...      # contra Kafka, Postgres y Redis reales (re
 - `internal/domain` (12 tests): reglas de validación, tabla de
   transiciones completa, aplicación de decisiones de riesgo, validación
   de `Merchant`.
-- `internal/application` (19 tests): `PaymentIntentService` (creación,
+- `internal/application` (20 tests): `PaymentIntentService` (creación,
   idempotencia, `UpdateStatus`, `merchant_status`/`merchant_recent_intents`
-  en el evento publicado) y `MerchantService`, con repositorios falsos
-  en memoria — incluye un test de concurrencia real (20 goroutines,
-  misma `idempotency_key`, una sola fila creada).
+  en el evento publicado, aplicar de inmediato la decisión cuando el
+  publisher cae al HTTP directo) y `MerchantService`, con repositorios
+  falsos en memoria — incluye un test de concurrencia real (20
+  goroutines, misma `idempotency_key`, una sola fila creada).
 - `internal/infrastructure/auth` (4 tests): firma/validación de JWT
   (round-trip, secreto incorrecto, expirado, malformado).
 - `internal/middleware` (3 tests): `RequireAuth` — token válido,
   ausente, inválido.
-- `internal/infrastructure/kafka` (3 tests, integración): productor,
-  consumidor, y `EnsureTopics`, contra un broker Kafka real.
+- `internal/infrastructure/kafka` (11 tests, 3 de integración): el
+  circuit breaker (cerrado/abierto/semi-abierto), el publisher cayendo
+  al HTTP directo cuando Kafka es inalcanzable, y el backoff con jitter
+  de la reconexión del consumer — sin necesitar un broker real para
+  nada de eso; productor, consumidor y `EnsureTopics` sí contra un
+  broker Kafka real (ver ADR-0008).
+- `internal/infrastructure/riskhttp` (3 tests): el cliente del camino
+  de emergencia, contra un servidor HTTP de prueba — éxito, error de
+  dominio, e inalcanzable.
 - `internal/infrastructure/postgres` (11 tests, integración): `Merchant`
   y `PaymentIntent`/historial reales contra PostgreSQL — creación,
   conflictos de unicidad, transiciones en dos pasos, listado filtrado,
@@ -644,21 +655,20 @@ resolución sin riesgo, borrado con historial, permisos del rol— y listadas en
 - [ADR-0005 — Reintentos, timeouts y circuit breaker del worker](docs/adr/0005-reintentos-y-breaker-del-worker.md)
 - [ADR-0006 — El reloj de conciliación va en un servicio aparte](docs/adr/0006-scheduler-como-servicio-aparte.md)
 - [ADR-0007 — Migraciones como proceso aparte, SQL plano, una sola base](docs/adr/0007-migraciones-como-proceso-aparte.md)
+- [ADR-0008 — Circuit breaker Kafka→HTTP cuando el broker mismo falla](docs/adr/0008-circuit-breaker-kafka-http.md)
 
 | Servicio | ADRs que lo gobiernan |
 |---|---|
-| `core-api` | [0001](docs/adr/0001-contrato-go-python.md) · [0002](docs/adr/0002-idempotencia.md) · [0003](docs/adr/0003-politica-risk-service-caido.md) · [0007](docs/adr/0007-migraciones-como-proceso-aparte.md) |
-| `risk-service` | [0001](docs/adr/0001-contrato-go-python.md) · [0003](docs/adr/0003-politica-risk-service-caido.md) · [0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md) |
+| `core-api` | [0001](docs/adr/0001-contrato-go-python.md) · [0002](docs/adr/0002-idempotencia.md) · [0003](docs/adr/0003-politica-risk-service-caido.md) · [0007](docs/adr/0007-migraciones-como-proceso-aparte.md) · [0008](docs/adr/0008-circuit-breaker-kafka-http.md) |
+| `risk-service` | [0001](docs/adr/0001-contrato-go-python.md) · [0003](docs/adr/0003-politica-risk-service-caido.md) · [0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md) · [0008](docs/adr/0008-circuit-breaker-kafka-http.md) |
 | `reconciliation-scheduler` | [0006](docs/adr/0006-scheduler-como-servicio-aparte.md) |
 | `reconciliation-worker` | [0003](docs/adr/0003-politica-risk-service-caido.md) · [0005](docs/adr/0005-reintentos-y-breaker-del-worker.md) · [0006](docs/adr/0006-scheduler-como-servicio-aparte.md) |
 | `db-migrator` y el esquema | [0002](docs/adr/0002-idempotencia.md) · [0007](docs/adr/0007-migraciones-como-proceso-aparte.md) |
 
 ## Pendientes
 
-- **Circuit breaker Kafka→HTTP**: si Kafka mismo falla (no el Risk
-  Service), el plan es caer a una llamada HTTP directa — quedó fuera de
-  esta iteración, se agrega una vez que el camino feliz con Kafka esté
-  probado en equipo.
+Nada pendiente por ahora — la última pieza de resiliencia que quedaba
+(circuit breaker Kafka→HTTP) se cerró en el ADR-0008.
 
 ## Flujo de trabajo con Git
 
@@ -775,3 +785,4 @@ líneas no se revisa, se aprueba.
 | `feature/risk-service-merchant-context` | Sergio | `risk-service` empieza a usar `merchant_status` (regla de comercio bloqueado, tratando ausente/desconocido como "no bloqueado") y prefiere `merchant_recent_intents` de `core-api` sobre su propia ventana en memoria, conservada como respaldo. `model_version` sube a `rules-v2`. | `risk-service/app/domain/rules.py`, `risk-service/app/application/evaluate.py`, `risk-service/app/domain/models.py` |
 | `feature/casos-de-prueba-y-postman` | Sergio | Los 8 casos del enunciado narrados en `scripts/casos-de-prueba.sh`, corriendo contra el sistema real (para/levanta `risk-service` en vivo para el caso de fallo de dependencia). Colección de Postman ampliada a 33 requests/55 assertions con comercios, los tres canales y conciliación real. | `scripts/casos-de-prueba.sh`, `docs/postman/MOVA.postman_collection.json`, `docs/postman/README.md` |
 | `feature/docs-final-openapi-adr` | Valentina | Cierre de documentación: OpenAPI de `core-api` al día (comercios, `PATCH /status` ya no pendiente, `/readiness` revisa Postgres) servido en vivo en `/docs`, diagramas de decisión y mecanismo en ADR-0001/0002/0003 (issue #16), y el README puesto al día con el estado real del sistema. | `docs/openapi/core-api-v1.yaml`, `docs/adr/0001-contrato-go-python.md`, `docs/adr/0002-idempotencia.md`, `docs/adr/0003-politica-risk-service-caido.md`, `core-api/internal/transport/http/docs_handler.go`, `README.md` |
+| `feature/kafka-resilience` | Valentina | Circuit breaker Kafka→HTTP (ADR-0008): si Kafka mismo falla, cae al endpoint síncrono de `risk-service` y aplica la decisión de inmediato — verificado en vivo parando el contenedor de Kafka. Verificando esto en vivo apareció un segundo hallazgo real: el consumer de `risk.evaluation.completed` tampoco se reconectaba solo tras perder la conexión — corregido con el mismo patrón de backoff con jitter del worker de Sergio, también verificado en vivo. | `core-api/internal/infrastructure/kafka/breaker.go`, `core-api/internal/infrastructure/kafka/consumer.go`, `core-api/internal/infrastructure/riskhttp/`, `docs/adr/0008-circuit-breaker-kafka-http.md` |

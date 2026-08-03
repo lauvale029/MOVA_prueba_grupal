@@ -14,6 +14,7 @@ import (
 	kafkainfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/kafka"
 	postgresinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/postgres"
 	redisinfra "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/redis"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/riskhttp"
 	transporthttp "github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/transport/http"
 )
 
@@ -66,7 +67,8 @@ func main() {
 	history := postgresinfra.NewPaymentIntentStatusHistoryRepository(pool)
 	locker := redisinfra.NewIdempotencyLocker(redisClient)
 	uow := postgresinfra.NewUnitOfWork(pool)
-	riskPublisher := kafkainfra.NewRiskRequestPublisher(brokers)
+	riskFallback := riskhttp.NewClient(getenv("RISK_SERVICE_URL", "http://risk-service:8081"))
+	riskPublisher := kafkainfra.NewRiskRequestPublisher(brokers, riskFallback)
 	defer riskPublisher.Close()
 
 	service := application.NewPaymentIntentService(payments, history, merchantRepo, locker, uow, riskPublisher)
