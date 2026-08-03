@@ -83,7 +83,7 @@ func main() {
 	}()
 
 	paymentHandler := transporthttp.NewPaymentIntentHandler(service)
-	readinessHandler := transporthttp.NewReadinessHandler(brokers[0])
+	readinessHandler := transporthttp.NewReadinessHandler(brokers[0], pool)
 	router := transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, tokens)
 
 	go func() {

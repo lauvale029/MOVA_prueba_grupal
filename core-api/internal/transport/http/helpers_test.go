@@ -24,6 +24,10 @@ func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequ
 	return nil
 }
 
+type okPinger struct{}
+
+func (okPinger) Ping(_ context.Context) error { return nil }
+
 type fakeMerchantRepository struct {
 	mu       sync.Mutex
 	byID     map[string]*domain.Merchant
@@ -216,7 +220,7 @@ func setupApp() *testApp {
 
 	paymentHandler := transporthttp.NewPaymentIntentHandler(service)
 	merchantHandler := transporthttp.NewMerchantHandler(merchantService)
-	readinessHandler := transporthttp.NewReadinessHandler("localhost:0") // no se usa en estos tests
+	readinessHandler := transporthttp.NewReadinessHandler("localhost:0", okPinger{}) // no se usa en estos tests
 	authHandler := transporthttp.NewAuthHandler(tokens, testAuthUsername, testAuthPassword)
 
 	return &testApp{
