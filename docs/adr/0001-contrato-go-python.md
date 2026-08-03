@@ -25,9 +25,16 @@ tópicos:
     "amount_minor": 15000000,
     "currency": "COP",
     "channel": "QR",
-    "correlation_id": "uuid"
+    "correlation_id": "uuid",
+    "merchant_status": "ACTIVE",
+    "merchant_recent_intents": 3
   }
   ```
+  Los dos últimos campos se añadieron después del contrato original y son
+  **opcionales**: `core-api` es dueño de ambos datos y el Risk Service los
+  usa si vienen. Si faltan, decide como antes — un estado ausente no se
+  interpreta como bloqueado, y la cuenta se deriva del propio flujo de
+  eventos ([ADR-0004](0004-velocidad-sin-acceso-a-la-base.md)).
 - `risk.evaluation.completed` — el Risk Service publica acá el
   resultado. Payload:
   ```json
@@ -36,9 +43,13 @@ tópicos:
     "decision": "APPROVE",
     "score": 12,
     "reason_codes": [],
-    "model_version": "rules-v1"
+    "model_version": "rules-v2"
   }
   ```
+  `model_version` sube cuando cambian las reglas o sus umbrales, para que
+  al auditar un pago histórico se sepa con qué versión se decidió. `v2`
+  añadió la regla de comercio bloqueado. Un cambio **incompatible** de la
+  forma del mensaje no subiría esto: sería un topic `v2`.
 
 `core-api` mueve el Payment Intent de `PENDING` a `UNDER_REVIEW` de
 forma **atómica junto con su entrada de historial, antes de publicar el

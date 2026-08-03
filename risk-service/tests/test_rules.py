@@ -41,6 +41,9 @@ def make_input(**overrides: object) -> RiskInput:
         ({"external_reference": "TEST-9"}, Decision.REJECT, ReasonCode.SUSPICIOUS_REFERENCE),
         ({"external_reference": "fraud-1"}, Decision.REJECT, ReasonCode.SUSPICIOUS_REFERENCE),
         ({"external_reference": "   "}, Decision.REJECT, ReasonCode.SUSPICIOUS_REFERENCE),
+        ({"merchant_status": "INACTIVE"}, Decision.REJECT, ReasonCode.MERCHANT_BLOCKED),
+        ({"merchant_status": "inactive"}, Decision.REJECT, ReasonCode.MERCHANT_BLOCKED),
+        ({"merchant_status": "ACTIVE"}, Decision.APPROVE, ReasonCode.LOW_RISK),
     ],
 )
 def test_cada_regla_produce_su_decision(overrides, decision, reason) -> None:
@@ -54,6 +57,26 @@ def test_la_regla_mas_severa_gana() -> None:
     result = evaluate(make_input(external_reference="FRAUD-1", amount_minor=99_000_000), THRESHOLDS)
     assert result.decision is Decision.REJECT
     assert result.reason_codes == [ReasonCode.SUSPICIOUS_REFERENCE.value]
+
+
+def test_el_comercio_bloqueado_gana_a_todo_lo_demas() -> None:
+    """Es lo mas categorico: si el comercio no puede operar, da igual que
+    la referencia ademas sea sospechosa."""
+    result = evaluate(
+        make_input(merchant_status="INACTIVE", external_reference="FRAUD-1"),
+        THRESHOLDS,
+    )
+    assert result.reason_codes == [ReasonCode.MERCHANT_BLOCKED.value]
+    assert result.score == 100
+
+
+@pytest.mark.parametrize("estado", ["", "   ", "SUSPENDIDO", "unknown"])
+def test_no_se_rechaza_por_no_saber_el_estado(estado: str) -> None:
+    """Un evento sin el campo, o con un estado que este servicio no
+    conoce, no puede convertirse en un rechazo: seria tumbar todas las
+    aprobaciones cada vez que los dos lados se desalinean."""
+    result = evaluate(make_input(merchant_status=estado), THRESHOLDS)
+    assert result.decision is Decision.APPROVE
 
 
 def test_es_determinista() -> None:

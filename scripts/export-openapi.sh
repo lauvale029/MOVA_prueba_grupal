@@ -3,7 +3,7 @@
 # El de core-api se escribe a mano: es el contrato que consumimos, e incluye
 # el endpoint pendiente que todavia no existe.
 set -euo pipefail
-cd "$(dirname "$0")/risk-service"
+cd "$(dirname "$0")/../risk-service"
 KAFKA_ENABLED=false .venv/bin/python - <<'PY' > ../docs/openapi/risk-service-v1.yaml
 import yaml
 from app.main import app

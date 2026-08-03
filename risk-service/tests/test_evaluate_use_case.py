@@ -11,7 +11,11 @@ THRESHOLDS = RiskThresholds(
 )
 
 
-def make_input(intent_id: str, merchant: str = "merchant-a") -> RiskInput:
+def make_input(
+    intent_id: str,
+    merchant: str = "merchant-a",
+    merchant_recent_intents: int | None = None,
+) -> RiskInput:
     return RiskInput(
         payment_intent_id=intent_id,
         merchant_id=merchant,
@@ -19,6 +23,7 @@ def make_input(intent_id: str, merchant: str = "merchant-a") -> RiskInput:
         amount_minor=150_000,
         currency="COP",
         channel="QR",
+        merchant_recent_intents=merchant_recent_intents,
     )
 
 
@@ -44,3 +49,34 @@ def test_la_velocidad_es_por_comercio() -> None:
         evaluate(make_input(str(i), merchant="ruidoso"))
 
     assert evaluate(make_input("x", merchant="tranquilo")).decision is Decision.APPROVE
+
+
+def test_manda_la_cuenta_de_core_api_sobre_la_propia() -> None:
+    """core-api cuenta sobre su tabla: es exacta con varias replicas de
+    este servicio y sobrevive a reinicios. Cuando viene, gana."""
+    evaluate = EvaluateRisk(SlidingWindowVelocity(60), THRESHOLDS)
+
+    # La ventana propia esta vacia y aun asi se rechaza por velocidad.
+    assert evaluate(make_input("1", merchant_recent_intents=99)).decision is Decision.REJECT
+
+
+def test_sin_el_dato_del_core_se_usa_la_ventana_propia() -> None:
+    """El campo es opcional: un core que no lo mande no puede dejar la
+    regla de velocidad sin efecto."""
+    evaluate = EvaluateRisk(SlidingWindowVelocity(60), THRESHOLDS)
+    for i in range(4):
+        evaluate(make_input(str(i)))
+
+    assert evaluate(make_input("ultimo")).decision is Decision.REJECT
+
+
+def test_la_ventana_propia_se_sigue_alimentando_aunque_mande_el_core() -> None:
+    """Si el campo dejara de llegar, el respaldo tiene que estar caliente,
+    no arrancar de cero."""
+    velocidad = SlidingWindowVelocity(60)
+    evaluate = EvaluateRisk(velocidad, THRESHOLDS)
+
+    for i in range(4):
+        evaluate(make_input(str(i), merchant_recent_intents=0))
+
+    assert velocidad.count("merchant-a") == 4

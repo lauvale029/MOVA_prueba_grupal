@@ -28,6 +28,21 @@ class MalformedEvent(ValueError):
     """El mensaje no cumple el contrato. No se reintenta: se descarta."""
 
 
+def _optional_int(value: Any) -> int | None:
+    """Entero del evento, o None si no vino o no es un entero.
+
+    Un valor basura no invalida el evento entero: se ignora ese campo y se
+    decide con el respaldo. Rechazar el pago por un tipo mal puesto seria
+    peor que la ausencia del dato.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_requested(raw: bytes) -> RiskInput:
     payload: dict[str, Any] = json.loads(raw)
 
@@ -39,6 +54,9 @@ def parse_requested(raw: bytes) -> RiskInput:
     if missing:
         raise MalformedEvent(f"faltan campos obligatorios: {', '.join(missing)}")
 
+    # merchant_status y merchant_recent_intents son opcionales: los anadio
+    # core-api despues del contrato original (ADR-0001). Si faltan, este
+    # servicio decide como antes.
     return RiskInput(
         payment_intent_id=str(payload["payment_intent_id"]),
         merchant_id=str(payload["merchant_id"]),
@@ -46,6 +64,8 @@ def parse_requested(raw: bytes) -> RiskInput:
         amount_minor=int(payload["amount_minor"]),
         currency=str(payload.get("currency", "COP")),
         channel=str(payload.get("channel", "")),
+        merchant_status=str(payload.get("merchant_status", "")),
+        merchant_recent_intents=_optional_int(payload.get("merchant_recent_intents")),
     )
 
 

@@ -17,6 +17,9 @@ BASE_POINTS = 5
 
 # Puntos por regla disparada.
 RULE_POINTS: dict[ReasonCode, int] = {
+    # Un comercio bloqueado no es una sospecha, es un hecho que reporta
+    # core-api: satura el score y no deja lugar a interpretacion.
+    ReasonCode.MERCHANT_BLOCKED: 100,
     ReasonCode.SUSPICIOUS_REFERENCE: 95,
     ReasonCode.ABNORMAL_VELOCITY: 95,
     ReasonCode.AMOUNT_ABOVE_REVIEW_THRESHOLD: 55,

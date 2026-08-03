@@ -26,15 +26,34 @@ class ReasonCode(StrEnum):
     AMOUNT_ABOVE_REVIEW_THRESHOLD = "AMOUNT_ABOVE_REVIEW_THRESHOLD"
     ABNORMAL_VELOCITY = "ABNORMAL_VELOCITY"
     SUSPICIOUS_REFERENCE = "SUSPICIOUS_REFERENCE"
+    MERCHANT_BLOCKED = "MERCHANT_BLOCKED"
+
+
+class MerchantStatus(StrEnum):
+    """Estado del comercio, tal como lo publica core-api.
+
+    Es un enum para nombrar el valor que importa, no para validar: un
+    estado desconocido o ausente NO bloquea nada (ver rules.evaluate).
+    """
+
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
 
 
 @dataclass(frozen=True, slots=True)
 class RiskInput:
     """Todo lo que hace falta para decidir.
 
-    `recent_intents` no viene en el evento: lo aporta quien invoca las
-    reglas (ver application/ports.py). El dominio no sabe de donde sale,
-    y por eso se puede probar con una tabla de casos.
+    `recent_intents` es el numero que usan las reglas, y lo resuelve quien
+    las invoca (ver application/evaluate.py). El dominio no sabe de donde
+    sale, y por eso se puede probar con una tabla de casos.
+
+    `merchant_recent_intents` es distinto: es lo que REPORTO core-api en el
+    evento, o None si no vino. Existe para que la capa de aplicacion pueda
+    preferirlo sobre su propia cuenta en memoria; las reglas no lo miran.
+
+    `merchant_status` puede llegar vacio en eventos de una version anterior
+    del contrato. Vacio significa "no se", no "bloqueado".
     """
 
     payment_intent_id: str
@@ -44,6 +63,8 @@ class RiskInput:
     currency: str
     channel: str
     recent_intents: int = 0
+    merchant_status: str = ""
+    merchant_recent_intents: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

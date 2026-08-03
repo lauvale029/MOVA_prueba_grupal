@@ -44,6 +44,8 @@ def build_router(evaluate: EvaluateRisk, kafka_enabled: bool) -> APIRouter:
                 amount_minor=request.amount_minor,
                 currency=request.currency,
                 channel=request.channel,
+                merchant_status=request.merchant_status,
+                merchant_recent_intents=request.merchant_recent_intents,
             )
         )
         return EvaluateResponse(

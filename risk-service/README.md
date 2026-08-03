@@ -40,18 +40,25 @@ pagos, es que **no tiene credenciales de ninguna base**.
 
 ## Las reglas
 
-Se evalúan en orden de severidad y la primera que dispara manda: una referencia sospechosa se
-rechaza aunque el monto sea bajo.
+Se evalúan en orden de severidad y la primera que dispara manda: un comercio bloqueado se rechaza
+aunque todo lo demás esté limpio, y una referencia sospechosa se rechaza aunque el monto sea bajo.
 
 | Orden | Condición | Decisión | `reason_code` |
 |---|---|---|---|
-| 1 | Referencia vacía o con prefijo sospechoso | `REJECT` | `SUSPICIOUS_REFERENCE` |
-| 2 | Intents recientes del comercio sobre el umbral | `REJECT` | `ABNORMAL_VELOCITY` |
-| 3 | `amount_minor` sobre el umbral de revisión | `REVIEW` | `AMOUNT_ABOVE_REVIEW_THRESHOLD` |
-| 4 | Ninguna de las anteriores | `APPROVE` | `LOW_RISK` |
+| 1 | `merchant_status` es `INACTIVE` | `REJECT` | `MERCHANT_BLOCKED` |
+| 2 | Referencia vacía o con prefijo sospechoso | `REJECT` | `SUSPICIOUS_REFERENCE` |
+| 3 | Intents recientes del comercio sobre el umbral | `REJECT` | `ABNORMAL_VELOCITY` |
+| 4 | `amount_minor` sobre el umbral de revisión | `REVIEW` | `AMOUNT_ABOVE_REVIEW_THRESHOLD` |
+| 5 | Ninguna de las anteriores | `APPROVE` | `LOW_RISK` |
 
-`model_version` (`rules-v1`) viaja en cada respuesta y `core-api` la persiste: si mañana cambian los
-umbrales, se puede saber con qué versión se decidió cada pago histórico.
+**Un estado ausente o desconocido no bloquea.** `merchant_status` es un campo opcional del evento:
+si `core-api` no lo manda, o manda un valor que este servicio no conoce, se decide sin esa regla.
+Rechazar por no saber convertiría cualquier despliegue desalineado en una caída de las aprobaciones.
+
+`model_version` (`rules-v2`) viaja en cada respuesta y `core-api` la persiste: si mañana cambian los
+umbrales, se puede saber con qué versión se decidió cada pago histórico. `v2` añadió la regla de
+comercio bloqueado — sube porque el mismo pago puede decidirse distinto que con `v1`, y sin eso un
+`REJECT` viejo y uno nuevo serían indistinguibles al auditar.
 
 ### El score
 
@@ -62,24 +69,42 @@ No es un modelo: es una suma acotada a `[0, 100]` que se puede explicar en voz a
 + hasta 20 graduales por monto, proporcionales al umbral de revisión
 + 55  si el monto supera el umbral
 + 95  si disparó una regla bloqueante
++ 100 si el comercio está bloqueado
 ```
+
+El comercio bloqueado satura el score a propósito: no es una sospecha que este servicio infiera, es
+un hecho que reporta `core-api`.
 
 El componente gradual existe para que el score **discrimine dentro de una misma decisión**: dos
 pagos aprobados de 1.000 y de 90.000 COP no deberían tener el mismo número.
 
 ### La velocidad, sin tocar la base del core
 
-La regla de velocidad necesita saber cuántos intents recientes tiene el comercio, y ese dato **no
-viene en el evento** que publica `core-api`.
+La regla de velocidad necesita saber cuántos intents recientes tiene el comercio. Hay dos fuentes
+posibles y **manda la de `core-api`**:
 
-Este servicio lo cuenta por su cuenta, sobre una ventana deslizante en memoria alimentada por los
-eventos que ya consume. El razonamiento y sus limitaciones están en
-[ADR-0004](../docs/adr/0004-velocidad-sin-acceso-a-la-base.md). Dos detalles que importan:
+| Fuente | Cuándo se usa | Por qué |
+|---|---|---|
+| `merchant_recent_intents` del evento | Siempre que venga | La calcula el core sobre su tabla: exacta con varias réplicas y sobrevive a reinicios |
+| Ventana deslizante propia, en memoria | Si el campo no viene | El campo es opcional; un `core-api` anterior no lo manda y hay que seguir decidiendo |
+
+Las dos usan la misma semántica —no cuentan el intent que se está evaluando—, así que el umbral
+significa lo mismo con cualquiera de ellas.
+
+**La ventana propia se sigue alimentando aunque mande el core**, para que el respaldo esté caliente
+si el campo deja de llegar y no arranque de cero justo cuando hace falta. El razonamiento completo
+está en [ADR-0004](../docs/adr/0004-velocidad-sin-acceso-a-la-base.md).
+
+Dos detalles de la ventana propia que importan:
 
 - **`record` es idempotente por `payment_intent_id`.** Kafka entrega al menos una vez; sin esto, una
   reentrega inflaría el contador e inventaría un rechazo por velocidad.
 - **El intent que se está evaluando no se cuenta a sí mismo.** Si lo hiciera, el primer pago de un
   comercio ya arrancaría con velocidad 1 y el umbral se correría en uno.
+
+`risk_velocity_source_total{source}` dice cuál se usó. Si `local` deja de ser residual, el core dejó
+de mandar el campo y estaríamos decidiendo con una cuenta por instancia **sin que ninguna otra señal
+lo delate**.
 
 ## Estructura
 
