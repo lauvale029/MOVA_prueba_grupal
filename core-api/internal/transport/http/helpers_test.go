@@ -222,9 +222,10 @@ func setupApp() *testApp {
 	merchantHandler := transporthttp.NewMerchantHandler(merchantService)
 	readinessHandler := transporthttp.NewReadinessHandler("localhost:0", okPinger{}) // no se usa en estos tests
 	authHandler := transporthttp.NewAuthHandler(tokens, testAuthUsername, testAuthPassword)
+	docsHandler := transporthttp.NewDocsHandler("") // no se usa en estos tests
 
 	return &testApp{
-		app:       transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, tokens),
+		app:       transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, docsHandler, tokens),
 		service:   service,
 		payments:  payments,
 		merchants: merchants,

@@ -50,11 +50,11 @@ flowchart TB
     beat -->|"cada 5 min"| t3
     t3 --> worker
     worker -->|"GET intents abiertos"| core
-    worker -.->|"PATCH /status<br/>PENDIENTE"| core
+    worker -->|"PATCH /status"| core
 
     mig -->|"DDL, una vez"| pg
     core -->|"SQL"| pg
-    core -.->|"hoy no-op"| redis
+    core -.->|"lock best-effort"| redis
 
     core -.->|"/metrics"| prom
     risk -.-> prom
@@ -75,8 +75,9 @@ flowchart TB
 
 **Lo que el diagrama deja ver de un vistazo:** el riesgo nunca toca la base y ni siquiera conoce al
 core —solo intercambia eventos—; el reloj está separado del ejecutor; y el worker entra por la misma
-puerta que cualquier cliente. La única flecha punteada del camino de negocio es el `PATCH /status`
-que [falta implementar](#integración-pendiente-patch-status).
+puerta que cualquier cliente, con el mismo `PATCH /status` que ya usa en producción. La única flecha
+punteada del camino de negocio es el lock de Redis: es una optimización best-effort, no una garantía
+(ver [ADR-0002](docs/adr/0002-idempotencia.md)) — el sistema sigue siendo correcto si Redis cae.
 
 | Componente | Tecnología | Responsabilidad | Dueño | Documentación |
 |---|---|---|---|---|
@@ -85,8 +86,8 @@ que [falta implementar](#integración-pendiente-patch-status).
 | `reconciliation-scheduler` | Python | El reloj: publica el tick de conciliación | Sergio | [README](reconciliation-scheduler/README.md) |
 | `reconciliation-worker` | Python | Expira Payment Intents vencidos | Sergio | [README](reconciliation-worker/README.md) |
 | `db-migrator` | SQL + `migrate` | Aplica migraciones y termina | Sergio | [Esquema](docs/esquema-de-datos.md) |
-| PostgreSQL | Infra | Fuente de verdad — esquema listo, `core-api` aún en memoria | Sergio (esquema) | [Esquema](docs/esquema-de-datos.md) |
-| Redis | Infra | Lock rápido de idempotencia — hoy un no-op | Pendiente (Eduard) | — |
+| PostgreSQL | Infra | Fuente de verdad — `core-api` conecta como `mova_app` | Sergio (esquema) · Valentina (repos) | [Esquema](docs/esquema-de-datos.md) |
+| Redis | Infra | Lock best-effort de idempotencia (`SET NX` + TTL) | Valentina | [ADR-0002](docs/adr/0002-idempotencia.md) |
 | Kafka | Infra | Mensajería entre servicios | Valentina · Sergio | [ADR-0001](docs/adr/0001-contrato-go-python.md) |
 | Prometheus + Grafana | Infra | Métricas y dashboard aprovisionado | Sergio | [Observabilidad](#observabilidad) |
 
@@ -280,12 +281,11 @@ afirma el número exacto ([ADR-0005](docs/adr/0005-reintentos-y-breaker-del-work
 MOVA_prueba_grupal/
 ├── core-api/                  # Go — dominio, aplicación, infraestructura, transporte
 │   ├── cmd/api/
-│   ├── internal/
-│   │   ├── domain/
-│   │   ├── application/
-│   │   ├── infrastructure/{kafka,memory,redis,postgres}/
-│   │   └── transport/http/
-│   └── migrations/            # vacía — pendiente (ver Pendientes)
+│   └── internal/
+│       ├── domain/
+│       ├── application/
+│       ├── infrastructure/{kafka,redis,postgres,auth}/
+│       └── transport/http/
 ├── risk-service/               # Python — reglas de riesgo, consumidor Kafka
 │   ├── app/{domain,application,infrastructure,api}/
 │   └── tests/                  # 35 tests, ninguno necesita red
@@ -396,8 +396,8 @@ Ver [`.env.example`](.env.example). Resumen:
 | Variable | Descripción |
 |---|---|
 | `PORT` | Puerto HTTP de `core-api` |
-| `DB_*`, `DATABASE_URL` | Postgres (no usado todavía por `core-api` — ver Pendientes) |
-| `REDIS_PORT`, `REDIS_ADDR` | Redis (no usado todavía por `core-api` — ver Pendientes) |
+| `DB_*`, `DATABASE_URL` | Postgres — `core-api` conecta como `mova_app`, `db-migrator` como el superusuario de arranque (ver ADR-0007) |
+| `REDIS_PORT`, `REDIS_ADDR` | Redis — lock best-effort de idempotencia (ver ADR-0002) |
 | `KAFKA_BROKERS` | Broker(s) de Kafka, separados por coma |
 | `JWT_SECRET`, `JWT_EXPIRATION_MINUTES`, `AUTH_USERNAME`, `AUTH_PASSWORD` | Autenticación (ver PR de auth) |
 | `REVIEW_AMOUNT_MINOR`, `VELOCITY_*`, `SUSPICIOUS_REFERENCE_PREFIXES` | Umbrales de las reglas de riesgo |
@@ -408,40 +408,23 @@ Ver [`.env.example`](.env.example). Resumen:
 
 | Método | Ruta | Auth | Descripción |
 |---|---|---|---|
-| `GET` | `/readiness` | No | Confirma que Kafka es alcanzable |
+| `GET` | `/readiness` | No | Confirma que Kafka y Postgres son alcanzables |
+| `GET` | `/docs` | No | Swagger UI contra `docs/openapi/core-api-v1.yaml` |
 | `POST` | `/api/v1/auth/login` | No | Autentica con la credencial de servicio, devuelve un JWT |
-| `POST` | `/api/v1/payment-intents` | **Sí** | Crea un Payment Intent (requiere `Idempotency-Key`) |
+| `POST` | `/api/v1/merchants` | **Sí** | Crea un comercio (siempre `ACTIVE`) |
+| `GET` | `/api/v1/merchants/{id}` | **Sí** | Consulta un comercio |
+| `POST` | `/api/v1/payment-intents` | **Sí** | Crea un Payment Intent (requiere `Idempotency-Key`, `merchant_id` de un comercio existente) |
 | `GET` | `/api/v1/payment-intents` | **Sí** | Lista con filtros `merchant_id`, `status`, `page`, `limit` |
 | `GET` | `/api/v1/payment-intents/{id}` | **Sí** | Consulta un Payment Intent |
 | `GET` | `/api/v1/payment-intents/{id}/history` | **Sí** | Historial de cambios de estado |
-| `PATCH` | `/api/v1/payment-intents/{id}/status` | **Sí** | **No implementado todavía** — lo necesita el worker, ver abajo |
+| `PATCH` | `/api/v1/payment-intents/{id}/status` | **Sí** | Transición manual de estado — la usa el `reconciliation-worker` para expirar vencidos |
 
 Los servicios Python exponen lo suyo aparte:
 
 | Servicio | Puerto | Rutas |
 |---|---|---|
-| `risk-service` | `8081` | `/health`, `/readiness`, `/metrics`, `POST /api/v1/risk-evaluations` |
+| `risk-service` | `8081` | `/health`, `/readiness`, `/metrics`, `/docs` (Swagger UI), `POST /api/v1/risk-evaluations` |
 | `reconciliation-worker` | `8082` | `/metrics` |
-
-#### Integración pendiente: `PATCH /status`
-
-El `reconciliation-worker` necesita solicitar la transición a `EXPIRED`, y hoy
-`core-api` no expone ninguna forma de cambiar el estado de un intent. El worker
-está implementado y probado contra este contrato:
-
-```
-PATCH /api/v1/payment-intents/{payment_intent_id}/status
-{ "status": "EXPIRED", "reason": "vencido sin resolverse dentro de la ventana" }
-```
-
-`200` con el intent, `409` si ya estaba en ese estado, `422` si la transición no
-es válida. Las dos transiciones que hacen falta ya existen en la tabla del
-dominio (`PENDING→EXPIRED` y `UNDER_REVIEW→EXPIRED`), así que es solo el
-handler.
-
-Mientras no exista, el worker detecta el `404`, corta el ciclo y sale con código
-`2` — se distingue de una caída a propósito, para que no se confunda un
-pendiente de integración con un problema de disponibilidad.
 
 ### Contratos y colección de Postman
 
@@ -451,17 +434,19 @@ cuando falla— están en
 
 | Artefacto | Qué es |
 |---|---|
-| [`docs/openapi/core-api-v1.yaml`](docs/openapi/core-api-v1.yaml) | Contrato de `core-api`, **escrito desde el lado del consumidor**. Incluye el `PATCH /status` pendiente, marcado con `x-status: pendiente` |
+| [`docs/openapi/core-api-v1.yaml`](docs/openapi/core-api-v1.yaml) | Contrato de `core-api`, **escrito desde el lado del consumidor**. Servido en vivo en `/docs` |
 | [`docs/openapi/risk-service-v1.yaml`](docs/openapi/risk-service-v1.yaml) | Generado del código con [`scripts/export-openapi.sh`](scripts/export-openapi.sh) |
 | [`docs/postman/`](docs/postman/README.md) | Colección con `pm.test` en cada petición, su entorno y cómo se corre |
 
-Swagger UI del `risk-service` sale gratis en http://localhost:8081/docs.
+Swagger UI sale gratis en `risk-service` (FastAPI lo genera solo) y está servido
+a mano en `core-api`: http://localhost:8081/docs y http://localhost:8095/docs.
 
 **La colección afirma, no solo dispara.** 33 peticiones en 6 carpetas con **55
 aserciones**: que el reintento devuelve el mismo intent, que el dinero es
 entero, que cada entrada del historial está atribuida, que la referencia
-duplicada da `409` y no `201`, y que una transición ilegal da `422` con un
-código de error estable.
+duplicada da `409` y no `201`, que un comercio inexistente da `404` antes de
+llegar a crear un pago, y que una transición ilegal da `422` con un código de
+error estable.
 
 ```bash
 newman run docs/postman/MOVA.postman_collection.json \
@@ -509,13 +494,21 @@ servicio se resuelve solo, porque Kafka retuvo el evento.
 
 ### El recorrido completo, para CI
 
+Dos scripts equivalentes corren contra el sistema real, narrado en la terminal
+en vez de en Postman:
+
 ```bash
 docker compose up -d
-./scripts/demo.sh
+./scripts/demo.sh              # recorrido completo del sistema, pensado para CI
+./scripts/casos-de-prueba.sh   # los 8 casos del enunciado, uno por fila de la tabla,
+                                # pensado para la sustentación
 ```
 
-Once pasos que además comprueban las garantías del esquema con `psql` y el
-estado de la observabilidad. Sale distinto de cero si algo falla.
+`demo.sh` son once pasos que recorren el sistema entero y además comprueban las
+garantías del esquema con `psql` y el estado de la observabilidad;
+`casos-de-prueba.sh` se enfoca solo en los ocho casos de la tabla, con
+manipulación real de contenedores para el de fallo de dependencia. Los dos
+salen distinto de cero si algo falla.
 
 ### Autenticación
 
@@ -575,25 +568,34 @@ regla de revisión, no una recomendación.
 ```bash
 cd core-api
 go test ./...                        # unitarias, sin dependencias externas
-go test -tags=integration ./...      # contra Kafka real (requiere docker compose up)
+go test -tags=integration ./...      # contra Kafka, Postgres y Redis reales (requiere docker compose up)
 ```
 
-- `internal/domain` (10 tests): reglas de validación, tabla de
-  transiciones completa, aplicación de decisiones de riesgo.
-- `internal/application` (9 tests): `PaymentIntentService` con
-  repositorios falsos en memoria — incluye un test de concurrencia real
-  (20 goroutines, misma `idempotency_key`, una sola fila creada).
-- `internal/infrastructure/memory` (7 tests): los repositorios
-  temporales en memoria.
+- `internal/domain` (12 tests): reglas de validación, tabla de
+  transiciones completa, aplicación de decisiones de riesgo, validación
+  de `Merchant`.
+- `internal/application` (19 tests): `PaymentIntentService` (creación,
+  idempotencia, `UpdateStatus`, `merchant_status`/`merchant_recent_intents`
+  en el evento publicado) y `MerchantService`, con repositorios falsos
+  en memoria — incluye un test de concurrencia real (20 goroutines,
+  misma `idempotency_key`, una sola fila creada).
 - `internal/infrastructure/auth` (4 tests): firma/validación de JWT
   (round-trip, secreto incorrecto, expirado, malformado).
 - `internal/middleware` (3 tests): `RequireAuth` — token válido,
   ausente, inválido.
 - `internal/infrastructure/kafka` (3 tests, integración): productor,
   consumidor, y `EnsureTopics`, contra un broker Kafka real.
-- `internal/transport/http` (15 tests, 1 de integración): login,
-  endpoints de pagos protegidos (incluye el caso sin token → 401), y
-  `/readiness` contra Kafka real.
+- `internal/infrastructure/postgres` (11 tests, integración): `Merchant`
+  y `PaymentIntent`/historial reales contra PostgreSQL — creación,
+  conflictos de unicidad, transiciones en dos pasos, listado filtrado,
+  conteo de intents recientes para la velocidad.
+- `internal/infrastructure/redis` (2 tests, integración): el lock real
+  — un segundo intento con la misma key falla mientras el primero lo
+  tiene tomado, y se libera correctamente después.
+- `internal/transport/http` (30 tests, 1 de integración): login,
+  comercios, endpoints de pagos protegidos (incluye el `PATCH` de estado
+  y el caso sin token → 401), `/docs` sirviendo el contrato OpenAPI, y
+  `/readiness` contra Kafka y Postgres reales.
 
 ### Servicios Python
 
@@ -653,30 +655,10 @@ resolución sin riesgo, borrado con historial, permisos del rol— y listadas en
 
 ## Pendientes
 
-Temporales, explícitamente marcados con `TODO` en el código:
-
-- **`internal/infrastructure/memory/`**: implementación en memoria de los
-  repositorios. **El esquema ya existe** (`migrations/`, aplicado por
-  `db-migrator` y verificado contra PostgreSQL real), así que lo que falta es
-  reemplazar este paquete por repositorios contra Postgres respetando la
-  interfaz de `internal/application/ports.go`. Es el siguiente paso natural.
-- **`internal/infrastructure/redis/noop_locker.go`**: lock de idempotencia
-  que siempre "adquiere". El sistema sigue siendo correcto sin él (ver
-  ADR-0002) — falta la implementación real contra Redis.
-
 - **Circuit breaker Kafka→HTTP**: si Kafka mismo falla (no el Risk
   Service), el plan es caer a una llamada HTTP directa — quedó fuera de
   esta iteración, se agrega una vez que el camino feliz con Kafka esté
   probado en equipo.
-- **`PATCH /api/v1/payment-intents/{id}/status`**: lo necesita el
-  `reconciliation-worker` para cerrar los vencidos. Contrato y
-  comportamiento esperado arriba, en [Endpoints](#endpoints). Es lo único
-  que bloquea el camino completo de conciliación.
-- **La ventana de velocidad en memoria del Risk Service**: ya no decide
-  —manda el `merchant_recent_intents` que publica `core-api`— pero se
-  mantiene como respaldo porque el campo es opcional. Se puede retirar el
-  día que se decida que el contrato lo exige
-  ([ADR-0004](docs/adr/0004-velocidad-sin-acceso-a-la-base.md)).
 
 ## Flujo de trabajo con Git
 
@@ -784,3 +766,12 @@ líneas no se revisa, se aprueba.
 | `feature/payment-intent-core` | Valentina | Esqueleto del repo, dominio y aplicación de `PaymentIntent`, mensajería Kafka real (productor + consumidor + `EnsureTopics`), endpoints HTTP + `/readiness`, 3 ADRs. Persistencia real (Postgres/Redis) queda pendiente de Eduard — ver [Pendientes](#pendientes). | `core-api/internal/domain`, `core-api/internal/application`, `core-api/internal/infrastructure/{kafka,memory,redis}`, `core-api/internal/transport/http`, `docker-compose.yml`, `docs/adr/` |
 | `feature/auth-middleware` | Valentina | Autenticación JWT (login + middleware) sobre los endpoints de pagos, sin tabla de usuarios — misma credencial de servicio del proyecto individual de referencia. `changed_by` en el historial ahora sale del subject del token, no de un valor fijo. | `core-api/internal/infrastructure/auth`, `core-api/internal/middleware`, `core-api/internal/transport/http/{auth_handler.go,auth_context.go,router.go}` |
 | `feature/risk-service-reconciliation-worker` | Sergio | Los tres servicios Python (74 tests, `mypy --strict`): reglas de riesgo determinísticas sobre Kafka, el reloj de conciliación como servicio aparte, y el worker que expira intents vencidos vía API con reintentos, jitter y circuit breaker propios. Esquema de datos completo en SQL plano con triggers y roles, aplicado por un `db-migrator` externo y con las 9 garantías verificadas contra PostgreSQL real. Prometheus + Grafana con dashboard aprovisionado. 4 ADRs. Detectada y documentada una integración pendiente: `core-api` no expone `PATCH /status`, que el worker necesita. | `risk-service/`, `reconciliation-scheduler/`, `reconciliation-worker/`, `migrations/`, `observability/`, `docs/adr/0004`–`0007`, `docs/esquema-de-datos.md`, `docker-compose.yml` |
+| `feature/merchant` | Valentina | Vertical completo de comercios (dominio, Postgres real, HTTP) que le tocaba originalmente a Eduard, absorbido tras su salida del equipo. Migración 0006 agrega la FK `payment_intents.merchant_id` → `payments.merchants`. | `core-api/internal/domain/merchant.go`, `core-api/internal/application/merchant_service.go`, `core-api/internal/infrastructure/postgres/merchant_repository.go`, `core-api/internal/transport/http/merchant_handler.go`, `migrations/0006_merchants.*` |
+| `feature/payment-intent-postgres` | Valentina | Reemplaza los repositorios en memoria de `PaymentIntent`/historial por Postgres real; borra `internal/infrastructure/memory/` por completo. Cierra la referencia externa duplicada (issue #13), ya inerte al no depender más de memoria. Arregla `scripts/demo.sh` para crear un comercio real antes de usarlo (la FK de la migración 0006 lo exige) y lo deja portable en Windows. | `core-api/internal/infrastructure/postgres/payment_intent_repository.go`, `core-api/internal/infrastructure/postgres/payment_intent_status_history_repository.go`, `scripts/demo.sh` |
+| `feature/risk-event-merchant-context` | Valentina | Agrega `merchant_status` y `merchant_recent_intents` al evento `risk.evaluation.requested`, calculados antes de persistir el intent para no contarse a sí mismo (ver ADR-0004). Corrige un bug real encontrado al verificar: el producer de Kafka nunca serializaba estos dos campos, así que se calculaban pero se perdían al publicar. | `core-api/internal/application/payment_intent_service.go`, `core-api/internal/infrastructure/kafka/producer.go` |
+| `feature/payment-intent-status-endpoint` | Valentina | Expone `PATCH /payment-intents/{id}/status`, que el `reconciliation-worker` de Sergio ya esperaba y tenía probado. Separa "ya estaba en ese estado" (`409`) de una transición genuinamente inválida (`422`) — antes ambas mapeaban al mismo error. Verificado contra el worker real, no solo con tests propios. | `core-api/internal/application/payment_intent_service.go`, `core-api/internal/transport/http/payment_intent_handler.go`, `core-api/internal/transport/http/errors.go` |
+| `feature/redis-idempotency-lock` | Valentina | Lock real de idempotencia en Redis (`SET NX` + TTL + liberación por script Lua), reemplazando el no-op. Best-effort a propósito: Postgres sigue siendo la garantía final (ADR-0002). | `core-api/internal/infrastructure/redis/locker.go` |
+| `feature/core-api-healthcheck-and-roles` | Valentina | `core-api` conecta a Postgres como `mova_app` (no el superusuario); healthcheck real de Docker contra `/readiness`, que ahora también revisa Postgres. `db-migrator` se queda con el superusuario a propósito — la migración 0001 crea los roles y eso solo lo puede hacer uno. | `docker-compose.yml`, `core-api/internal/transport/http/readiness_handler.go` |
+| `feature/risk-service-merchant-context` | Sergio | `risk-service` empieza a usar `merchant_status` (regla de comercio bloqueado, tratando ausente/desconocido como "no bloqueado") y prefiere `merchant_recent_intents` de `core-api` sobre su propia ventana en memoria, conservada como respaldo. `model_version` sube a `rules-v2`. | `risk-service/app/domain/rules.py`, `risk-service/app/application/evaluate.py`, `risk-service/app/domain/models.py` |
+| `feature/casos-de-prueba-y-postman` | Sergio | Los 8 casos del enunciado narrados en `scripts/casos-de-prueba.sh`, corriendo contra el sistema real (para/levanta `risk-service` en vivo para el caso de fallo de dependencia). Colección de Postman ampliada a 33 requests/55 assertions con comercios, los tres canales y conciliación real. | `scripts/casos-de-prueba.sh`, `docs/postman/MOVA.postman_collection.json`, `docs/postman/README.md` |
+| `feature/docs-final-openapi-adr` | Valentina | Cierre de documentación: OpenAPI de `core-api` al día (comercios, `PATCH /status` ya no pendiente, `/readiness` revisa Postgres) servido en vivo en `/docs`, diagramas de decisión y mecanismo en ADR-0001/0002/0003 (issue #16), y el README puesto al día con el estado real del sistema. | `docs/openapi/core-api-v1.yaml`, `docs/adr/0001-contrato-go-python.md`, `docs/adr/0002-idempotencia.md`, `docs/adr/0003-politica-risk-service-caido.md`, `core-api/internal/transport/http/docs_handler.go`, `README.md` |

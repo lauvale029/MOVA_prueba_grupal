@@ -84,7 +84,8 @@ func main() {
 
 	paymentHandler := transporthttp.NewPaymentIntentHandler(service)
 	readinessHandler := transporthttp.NewReadinessHandler(brokers[0], pool)
-	router := transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, tokens)
+	docsHandler := transporthttp.NewDocsHandler(getenv("OPENAPI_SPEC_PATH", "../docs/openapi/core-api-v1.yaml"))
+	router := transporthttp.NewRouter(paymentHandler, merchantHandler, readinessHandler, authHandler, docsHandler, tokens)
 
 	go func() {
 		if err := router.Listen(":" + port); err != nil {

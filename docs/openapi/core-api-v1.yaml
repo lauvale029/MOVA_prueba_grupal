@@ -4,20 +4,19 @@ info:
   title: MOVA Core API
   version: "1.0.0"
   description: |
-    API de Payment Intents. Escrita **desde el lado del consumidor**: el
-    `reconciliation-worker` la usa para listar intents abiertos y solicitar su
-    expiración.
+    API de comercios y Payment Intents. Escrita **desde el lado del
+    consumidor**: el `reconciliation-worker` la usa para listar intents
+    abiertos y solicitar su expiración.
 
-    Dos advertencias antes de programar contra esto:
+    Una advertencia antes de programar contra esto: la creación de un
+    Payment Intent devuelve el intent en `UNDER_REVIEW`, no resuelto. La
+    decisión de riesgo llega después, de forma asíncrona (ADR-0001). Quien
+    integre debe consultar el recurso o su historial, no asumir que la
+    respuesta del `POST` es definitiva.
 
-    - `PATCH /payment-intents/{id}/status` está marcado con `x-status: pendiente`.
-      **Todavía no existe** en `core-api`. Está especificado aquí porque el worker
-      ya lo consume y porque así queda escrito el contrato exacto que hace falta
-      implementar. Ver README → Pendientes.
-    - La creación devuelve el intent en `UNDER_REVIEW`, no resuelto. La decisión
-      de riesgo llega después, de forma asíncrona (ADR-0001). Quien integre debe
-      consultar el recurso o su historial, no asumir que la respuesta del `POST`
-      es definitiva.
+    Un Payment Intent siempre pertenece a un comercio ya existente:
+    `payment_intents.merchant_id` tiene una foreign key contra
+    `payments.merchants` (migración 0006). Hay que crear el comercio primero.
 
 servers:
   - url: http://localhost:8095
@@ -27,6 +26,7 @@ servers:
 
 tags:
   - name: auth
+  - name: merchants
   - name: payment-intents
   - name: operación
 
@@ -37,13 +37,16 @@ paths:
   /readiness:
     get:
       tags: [operación]
-      summary: Confirma que Kafka es alcanzable
+      summary: Confirma que Kafka y Postgres son alcanzables
+      description: |
+        Redis queda afuera a propósito: es un lock best-effort (ADR-0002),
+        que esté caído no debería tumbar el healthcheck.
       security: []
       responses:
         "200":
           description: Listo para recibir tráfico
         "503":
-          description: Kafka no responde
+          description: Kafka o Postgres no responden
 
   /api/v1/auth/login:
     post:
@@ -76,6 +79,57 @@ paths:
                   token: { type: string }
                   expires_at: { type: string, format: date-time }
         "401":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/merchants:
+    post:
+      tags: [merchants]
+      summary: Crea un comercio
+      description: |
+        Siempre nace `ACTIVE` — el enunciado no define un flujo de
+        activación. `document_number` es único.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, document_number, email]
+              properties:
+                name: { type: string }
+                document_number: { type: string }
+                email: { type: string, format: email }
+            example:
+              name: "Tienda Ejemplo"
+              document_number: "900123456-7"
+              email: "contacto@tienda-ejemplo.com"
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Merchant" }
+        "409":
+          description: document_number ya existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/merchants/{merchant_id}:
+    get:
+      tags: [merchants]
+      summary: Consulta un comercio
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+      responses:
+        "200":
+          description: El comercio
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Merchant" }
+        "404":
           $ref: "#/components/responses/Error"
 
   /api/v1/payment-intents:
@@ -205,18 +259,13 @@ paths:
   /api/v1/payment-intents/{payment_intent_id}/status:
     patch:
       tags: [payment-intents]
-      summary: "[PENDIENTE] Solicita una transición de estado"
-      x-status: pendiente
-      x-owner: Valentina
+      summary: Solicita una transición de estado
       x-consumer: reconciliation-worker
       description: |
-        **Este endpoint todavía no existe en `core-api`.** Está especificado aquí
-        porque el `reconciliation-worker` ya lo consume y porque así queda escrito
-        el contrato exacto que hace falta implementar.
-
-        Las dos transiciones que necesita el worker ya existen en la tabla del
-        dominio (`PENDING → EXPIRED` y `UNDER_REVIEW → EXPIRED`), así que falta
-        solo el handler.
+        Hoy el único consumidor es el `reconciliation-worker`, para vencer
+        intents (`PENDING → EXPIRED` y `UNDER_REVIEW → EXPIRED`), pero el
+        endpoint acepta cualquier transición válida según la tabla del
+        dominio, no solo esas dos.
 
         El worker distingue el `404` de una caída a propósito: corta el ciclo y
         sale con código `2` en vez de reintentar algo que no va a aparecer.
@@ -247,7 +296,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PaymentIntent" }
         "404":
-          description: El intent no existe — **o el endpoint no está implementado**
+          description: El intent no existe
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -275,6 +324,11 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    MerchantId:
+      name: merchant_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
 
   responses:
     Error:
@@ -284,6 +338,25 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    MerchantStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE]
+      description: |
+        INACTIVE dispara la regla de comercio bloqueado en risk-service
+        (rechaza sin importar el resto de señales, ver ADR-0004). No hay
+        endpoint para cambiarlo todavía — se hace directo en la base.
+
+    Merchant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        document_number: { type: string }
+        email: { type: string, format: email }
+        status: { $ref: "#/components/schemas/MerchantStatus" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
     Channel:
       type: string
       enum: [QR, PAYMENT_LINK, DATAPHONE_SIMULATED]

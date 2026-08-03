@@ -9,6 +9,23 @@ devolver el mismo Payment Intent, nunca crear dos filas. La garantía no
 puede depender únicamente de un componente que puede no estar disponible
 (Redis).
 
+```mermaid
+flowchart TB
+    q{"¿dónde vive la garantía<br/>de idempotencia?"}
+    q -->|"A"| redis["solo Redis<br/>SET NX + TTL"]
+    q -->|"B"| pg["solo Postgres<br/>restricción única"]
+    q -->|"C"| both["las dos capas"]
+
+    redis --> redisx["si Redis cae o el TTL<br/>expira mal, no queda<br/>ninguna garantía real"]
+    pg --> pgx["correcta por sí sola, pero deja<br/>que dos requests concurrentes<br/>golpeen la base a la vez"]
+    both --> bothx["Postgres es la garantía final;<br/>Redis solo evita la carrera"]
+
+    bothx --> ok(["ELEGIDA"])
+
+    style redisx stroke-dasharray: 4 4
+    style pgx stroke-dasharray: 4 4
+```
+
 ## Decisión
 Estrategia de **dos capas**, reutilizando el mismo patrón validado en el
 proyecto individual de Go/Python:
@@ -27,15 +44,34 @@ Si la restricción de Postgres rechaza el `INSERT` por conflicto
 por esa `idempotency_key` y lo devuelve — nunca propaga el conflicto como
 un error al cliente cuando en realidad es un reintento legítimo.
 
-**Si Redis no está disponible:** hoy `IdempotencyLocker` está
-implementado como `NoopIdempotencyLocker` (ver README, pendiente de
-Eduard) — que siempre "adquiere" el lock. Esto es, en los hechos, el
-mismo comportamiento que tendría el sistema si Redis cayera en
-producción: se pierde la optimización de evitar que dos requests
-concurrentes golpeen la base al mismo tiempo, pero la restricción única
-de Postgres sigue garantizando que nunca se cree una fila duplicada. El
-sistema es correcto con o sin Redis; Redis solo lo hace más eficiente
-bajo concurrencia real.
+```mermaid
+sequenceDiagram
+    participant A as Request A
+    participant B as Request B
+    participant Redis as Redis
+    participant PG as Postgres
+
+    A->>Redis: SET NX idempotency-lock:key
+    Redis-->>A: OK (adquirido)
+    B->>Redis: SET NX idempotency-lock:key
+    Redis-->>B: false (ya existe)
+    Note over B: espera corta,<br/>revisa si la key ya existe
+    A->>PG: INSERT ... idempotency_key
+    PG-->>A: OK, fila creada
+    B->>PG: SELECT ... WHERE idempotency_key
+    PG-->>B: la fila que creó A
+    Note over A,B: las dos devuelven<br/>el MISMO intent
+```
+
+**Si Redis no está disponible:** `IdempotencyLocker.Acquire` devuelve
+`acquired=false` (ver `internal/infrastructure/redis/locker.go`) — el
+mismo camino que ya toma cuando pierde la carrera contra otro request.
+`PaymentIntentService.Create` espera un instante corto, revisa si la key
+ya existe y, si no, sigue adelante igual: se pierde la optimización de
+evitar que dos requests concurrentes golpeen la base al mismo tiempo,
+pero la restricción única de Postgres sigue garantizando que nunca se
+cree una fila duplicada. El sistema es correcto con o sin Redis; Redis
+solo lo hace más eficiente bajo concurrencia real.
 
 ## Alternativas consideradas
 - **Solo Redis (`SET NX` + TTL) sin restricción en Postgres:** se

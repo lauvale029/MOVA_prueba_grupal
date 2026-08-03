@@ -20,7 +20,7 @@ func (failingPinger) Ping(_ context.Context) error { return errors.New("boom") }
 
 func TestReadiness_KafkaUnreachable_ReturnsServiceUnavailable(t *testing.T) {
 	handler := transporthttp.NewReadinessHandler("localhost:1", okPinger{}) // puerto sin nada escuchando
-	app := transporthttp.NewRouter(nil, nil, handler, nil, nil)             // no se usan en este test
+	app := transporthttp.NewRouter(nil, nil, handler, nil, nil, nil)        // no se usan en este test
 
 	req := httptest.NewRequest(http.MethodGet, "/readiness", nil)
 	resp, err := app.Test(req, -1)
@@ -37,7 +37,7 @@ func TestReadiness_PostgresUnreachable_ReturnsServiceUnavailable(t *testing.T) {
 	defer ln.Close()
 
 	handler := transporthttp.NewReadinessHandler(ln.Addr().String(), failingPinger{})
-	app := transporthttp.NewRouter(nil, nil, handler, nil, nil)
+	app := transporthttp.NewRouter(nil, nil, handler, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/readiness", nil)
 	resp, err := app.Test(req, -1)

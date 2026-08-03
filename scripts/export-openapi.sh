@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Regenera docs/openapi/risk-service-v1.yaml desde el codigo.
-# El de core-api se escribe a mano: es el contrato que consumimos, e incluye
-# el endpoint pendiente que todavia no existe.
+# El de core-api se escribe a mano: es el contrato que consumimos.
 set -euo pipefail
 cd "$(dirname "$0")/../risk-service"
 KAFKA_ENABLED=false .venv/bin/python - <<'PY' > ../docs/openapi/risk-service-v1.yaml
