@@ -11,6 +11,20 @@ el request del cliente mientras el Risk Service responde, y si el Risk
 Service está lento o caído, el request quedaría colgado o fallaría por
 completo.
 
+```mermaid
+flowchart TB
+    q{"¿cómo evalúa core-api<br/>el riesgo de un pago?"}
+    q -->|"A"| sync["HTTP/gRPC síncrono"]
+    q -->|"B"| async["Kafka asíncrono"]
+
+    sync --> syncx["el request del cliente espera<br/>a que responda el Risk Service"]
+    async --> asyncx["el cliente recibe UNDER_REVIEW<br/>de inmediato, sin esperar"]
+
+    asyncx --> ok(["ELEGIDA"])
+
+    style syncx stroke-dasharray: 4 4
+```
+
 ## Decisión
 La comunicación se hace de forma **asíncrona, vía Kafka**, con dos
 tópicos:
@@ -57,6 +71,24 @@ evento** — no al revés. Si el proceso se cayera entre publicar y guardar
 el estado, quedaría un evento en Kafka sin que el intent refleje que ya
 se envió, lo cual sería inconsistente con lo que el resto del sistema
 puede observar.
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant Core as core-api
+    participant K as Kafka
+    participant R as Risk Service
+
+    C->>Core: POST /payment-intents
+    Core->>Core: PENDING -> UNDER_REVIEW<br/>(atómico con el historial)
+    Core-->>C: 201 UNDER_REVIEW
+    Core->>K: risk.evaluation.requested
+    K->>R: consume
+    R->>R: evalúa (reglas puras)
+    R->>K: risk.evaluation.completed
+    K->>Core: consume
+    Core->>Core: aplica la decisión<br/>(APPROVED/REJECTED)
+```
 
 Ambos tópicos se crean explícitamente al arrancar `core-api`
 (`kafka.EnsureTopics`), en vez de depender de la auto-creación al primer

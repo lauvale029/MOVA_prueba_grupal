@@ -86,8 +86,14 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: kafka:29092
       PORT: "8080"
+      OPENAPI_SPEC_PATH: /app/docs/openapi/core-api-v1.yaml
     ports:
       - "${PORT:-8080}:8080"
+    volumes:
+      # docs/openapi/core-api-v1.yaml vive en la raíz del repo, fuera del
+      # contexto de build de este servicio — se monta en vez de copiarse,
+      # para que solo haya una fuente de verdad (la sirve /docs).
+      - ./docs/openapi/core-api-v1.yaml:/app/docs/openapi/core-api-v1.yaml:ro
     healthcheck:
       # 127.0.0.1, no localhost: en Alpine, wget resuelve "localhost" a
       # ::1 primero, y la app solo escucha en IPv4 — con localhost el
