@@ -34,6 +34,17 @@ func authedGet(ta *testApp, path string) *http.Request {
 	return req
 }
 
+func authedPatch(t *testing.T, ta *testApp, path string, body map[string]any) *http.Request {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+ta.token)
+	return req
+}
+
 func validBody() map[string]any {
 	return map[string]any{
 		"merchant_id":        "merchant-1",
@@ -180,4 +191,72 @@ func TestGetPaymentIntentHistory_NotFound(t *testing.T) {
 	resp, err := ta.app.Test(authedGet(ta, "/api/v1/payment-intents/no-existe/history"), -1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestUpdateStatus_Success cierra el issue #11: es la transición que usa
+// el reconciliation-worker para vencer intents.
+func TestUpdateStatus_Success(t *testing.T) {
+	ta := setupApp()
+	created, _ := ta.app.Test(createRequest(t, ta, validBody(), "idem-1"), -1)
+	var createdBody map[string]any
+	decodeJSON(t, created, &createdBody)
+	id := createdBody["id"].(string) // ya en UNDER_REVIEW
+
+	resp, err := ta.app.Test(authedPatch(t, ta, "/api/v1/payment-intents/"+id+"/status", map[string]any{
+		"status": "EXPIRED", "reason": "vencido sin resolverse dentro de la ventana",
+	}), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	assert.Equal(t, "EXPIRED", body["status"])
+}
+
+func TestUpdateStatus_AlreadyAtTarget_Returns409(t *testing.T) {
+	ta := setupApp()
+	created, _ := ta.app.Test(createRequest(t, ta, validBody(), "idem-1"), -1)
+	var createdBody map[string]any
+	decodeJSON(t, created, &createdBody)
+	id := createdBody["id"].(string) // ya en UNDER_REVIEW
+
+	resp, err := ta.app.Test(authedPatch(t, ta, "/api/v1/payment-intents/"+id+"/status", map[string]any{
+		"status": "UNDER_REVIEW", "reason": "reintento del worker",
+	}), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, "el worker lo cuenta como éxito")
+}
+
+func TestUpdateStatus_InvalidTransition_Returns422(t *testing.T) {
+	ta := setupApp()
+	created, _ := ta.app.Test(createRequest(t, ta, validBody(), "idem-1"), -1)
+	var createdBody map[string]any
+	decodeJSON(t, created, &createdBody)
+	id := createdBody["id"].(string) // UNDER_REVIEW no permite ir a CANCELLED
+
+	resp, err := ta.app.Test(authedPatch(t, ta, "/api/v1/payment-intents/"+id+"/status", map[string]any{
+		"status": "CANCELLED", "reason": "no debería aplicar",
+	}), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+func TestUpdateStatus_NotFound(t *testing.T) {
+	ta := setupApp()
+	resp, err := ta.app.Test(authedPatch(t, ta, "/api/v1/payment-intents/no-existe/status", map[string]any{
+		"status": "EXPIRED", "reason": "vencido",
+	}), -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestUpdateStatus_MissingToken_Returns401(t *testing.T) {
+	ta := setupApp()
+	payload, _ := json.Marshal(map[string]any{"status": "EXPIRED", "reason": "vencido"})
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/payment-intents/no-importa/status", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := ta.app.Test(req, -1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }

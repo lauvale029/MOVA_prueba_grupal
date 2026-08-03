@@ -88,6 +88,28 @@ func (h *PaymentIntentHandler) Create(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(toPaymentIntentResponse(pi))
 }
 
+type updateStatusRequest struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+// UpdateStatus aplica una transición manual de estado. Hoy lo usa el
+// reconciliation-worker para expirar intents vencidos
+// (PATCH /payment-intents/{id}/status).
+func (h *PaymentIntentHandler) UpdateStatus(c *fiber.Ctx) error {
+	var req updateStatusRequest
+	if err := c.BodyParser(&req); err != nil {
+		return errorResponse(c, fiber.StatusBadRequest, "INVALID_REQUEST_BODY", "el cuerpo de la petición no es un JSON válido")
+	}
+
+	pi, err := h.service.UpdateStatus(c.Context(), c.Params("payment_intent_id"), domain.Status(req.Status), req.Reason, changedBy(c))
+	if err != nil {
+		return handleError(c, err)
+	}
+
+	return c.JSON(toPaymentIntentResponse(pi))
+}
+
 func (h *PaymentIntentHandler) Get(c *fiber.Ctx) error {
 	pi, err := h.service.Get(c.Context(), c.Params("payment_intent_id"))
 	if err != nil {

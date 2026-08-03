@@ -31,7 +31,7 @@ func handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, application.ErrConflict):
 		return errorResponse(c, fiber.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition):
-		return errorResponse(c, fiber.StatusConflict, "INVALID_TRANSITION", err.Error())
+		return errorResponse(c, fiber.StatusUnprocessableEntity, "INVALID_TRANSITION", err.Error())
 	case errors.Is(err, domain.ErrMissingIdempotencyKey),
 		errors.Is(err, domain.ErrMissingMerchantID),
 		errors.Is(err, domain.ErrMissingExternalReference),
