@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/auth"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/metrics"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/middleware"
 )
 
@@ -12,6 +13,8 @@ import (
 func NewRouter(paymentIntentHandler *PaymentIntentHandler, merchantHandler *MerchantHandler, readinessHandler *ReadinessHandler, authHandler *AuthHandler, docsHandler *DocsHandler, tokens *auth.TokenService) *fiber.App {
 	app := fiber.New()
 
+	app.Get("/health", Health)
+	app.Get("/metrics", MetricsHandler(metrics.Registry))
 	app.Get("/readiness", readinessHandler.Ready)
 	app.Get("/docs", docsHandler.UI)
 	app.Get("/docs/openapi.yaml", docsHandler.Spec)

@@ -5,6 +5,7 @@ import (
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/domain"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/metrics"
 )
 
 type PaymentIntentHandler struct {
@@ -83,6 +84,13 @@ func (h *PaymentIntentHandler) Create(c *fiber.Ctx) error {
 	)
 	if err != nil {
 		return handleError(c, err)
+	}
+
+	metrics.PaymentIntentsCreatedTotal.Inc()
+	if pi.RiskDecision != nil {
+		// Ya resuelto en la misma petición: cayó al circuit breaker
+		// HTTP directo (ADR-0008), no al camino async de Kafka.
+		metrics.PaymentIntentsResolvedTotal.WithLabelValues(string(*pi.RiskDecision), "http_fallback").Inc()
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(toPaymentIntentResponse(pi))

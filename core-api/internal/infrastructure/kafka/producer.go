@@ -11,6 +11,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
+	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/metrics"
 )
 
 const TopicRiskEvaluationRequested = "risk.evaluation.requested"
@@ -73,6 +74,7 @@ func (p *RiskRequestPublisher) Publish(ctx context.Context, event application.Ri
 	if p.breaker.allow() {
 		if err := p.publishToKafka(ctx, event); err == nil {
 			p.breaker.onSuccess()
+			metrics.RiskPublishTotal.WithLabelValues("kafka").Inc()
 			return nil, nil
 		}
 		p.breaker.onFailure()
@@ -82,9 +84,16 @@ func (p *RiskRequestPublisher) Publish(ctx context.Context, event application.Ri
 	// síncrono, para no dejar el intent esperando un evento que nunca
 	// va a llegar.
 	if p.fallback == nil {
+		metrics.RiskPublishTotal.WithLabelValues("no_fallback").Inc()
 		return nil, errors.New("kafka no disponible y no hay respaldo HTTP configurado")
 	}
-	return p.fallback.Evaluate(ctx, event)
+	result, err := p.fallback.Evaluate(ctx, event)
+	if err != nil {
+		metrics.RiskPublishTotal.WithLabelValues("http_fallback_error").Inc()
+		return nil, err
+	}
+	metrics.RiskPublishTotal.WithLabelValues("http_fallback_ok").Inc()
+	return result, nil
 }
 
 func (p *RiskRequestPublisher) publishToKafka(ctx context.Context, event application.RiskEvaluationRequested) error {
