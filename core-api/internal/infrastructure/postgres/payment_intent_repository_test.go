@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -192,4 +193,37 @@ func TestPaymentIntentRepository_ListAndCount_FiltersByMerchant(t *testing.T) {
 	total, err := repo.Count(context.Background(), filter)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), total)
+}
+
+// TestPaymentIntentRepository_CountRecentByMerchant cierra el issue #14:
+// alimenta merchant_recent_intents, apoyado en ix_intents_merchant_recent.
+func TestPaymentIntentRepository_CountRecentByMerchant(t *testing.T) {
+	pool, err := postgres.NewPool(context.Background(), databaseURL(t))
+	require.NoError(t, err)
+	defer pool.Close()
+
+	merchants := postgres.NewMerchantRepository(pool)
+	merchantA := seedMerchant(t, merchants)
+	merchantB := seedMerchant(t, merchants)
+	repo := postgres.NewPaymentIntentRepository(pool)
+	history := postgres.NewPaymentIntentStatusHistoryRepository(pool)
+	uow := postgres.NewUnitOfWork(pool)
+
+	since := time.Now().UTC().Add(-time.Minute)
+
+	before, err := repo.CountRecentByMerchant(context.Background(), merchantA.ID, since)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), before, "sin intents todavía")
+
+	require.NoError(t, createIntent(t, uow, repo, history, newIntent(t, merchantA.ID, "order-"+uuid.New().String(), uuid.New().String())))
+	require.NoError(t, createIntent(t, uow, repo, history, newIntent(t, merchantA.ID, "order-"+uuid.New().String(), uuid.New().String())))
+	require.NoError(t, createIntent(t, uow, repo, history, newIntent(t, merchantB.ID, "order-"+uuid.New().String(), uuid.New().String())))
+
+	afterA, err := repo.CountRecentByMerchant(context.Background(), merchantA.ID, since)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), afterA, "solo cuenta los del comercio pedido")
+
+	old, err := repo.CountRecentByMerchant(context.Background(), merchantA.ID, time.Now().UTC().Add(time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, int64(0), old, "una ventana en el futuro no encuentra nada")
 }

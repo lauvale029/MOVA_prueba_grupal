@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
@@ -39,6 +40,7 @@ func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
 		PaymentIntentID: expectedID, MerchantID: "merchant-1",
 		ExternalReference: "order-1", AmountMinor: 15000000,
 		Currency: "COP", Channel: "QR", CorrelationID: "corr-1",
+		MerchantStatus: "ACTIVE", MerchantRecentIntents: 3,
 	}
 	require.NoError(t, publisher.Publish(context.Background(), event))
 
@@ -65,6 +67,9 @@ func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
 			break
 		}
 	}
+
+	assert.Equal(t, "ACTIVE", got["merchant_status"])
+	assert.Equal(t, float64(3), got["merchant_recent_intents"])
 }
 
 type noopLocker struct{}
@@ -138,6 +143,18 @@ func (r *fakePaymentIntentRepository) Count(_ context.Context, _ application.Pay
 	return 0, nil
 }
 
+func (r *fakePaymentIntentRepository) CountRecentByMerchant(_ context.Context, _ string, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
+type fakeMerchantRepository struct{}
+
+func (fakeMerchantRepository) Create(_ context.Context, _ *domain.Merchant) error { return nil }
+
+func (fakeMerchantRepository) GetByID(_ context.Context, id string) (*domain.Merchant, error) {
+	return &domain.Merchant{ID: id, Status: domain.MerchantStatusActive}, nil
+}
+
 type fakeHistoryRepository struct{}
 
 func (fakeHistoryRepository) Create(_ context.Context, _ *domain.PaymentIntentStatusHistory) error {
@@ -157,7 +174,8 @@ func (fakeUnitOfWork) Execute(ctx context.Context, fn func(context.Context) erro
 func TestRiskResultConsumer_AppliesResultFromKafka(t *testing.T) {
 	payments := &fakePaymentIntentRepository{}
 	history := fakeHistoryRepository{}
-	service := application.NewPaymentIntentService(payments, history, noopLocker{}, fakeUnitOfWork{}, noopPublisher{})
+	merchants := fakeMerchantRepository{}
+	service := application.NewPaymentIntentService(payments, history, merchants, noopLocker{}, fakeUnitOfWork{}, noopPublisher{})
 
 	pi, err := domain.NewPaymentIntent("merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "")
 	require.NoError(t, err)

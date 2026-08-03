@@ -68,7 +68,7 @@ func main() {
 	riskPublisher := kafkainfra.NewRiskRequestPublisher(brokers)
 	defer riskPublisher.Close()
 
-	service := application.NewPaymentIntentService(payments, history, locker, uow, riskPublisher)
+	service := application.NewPaymentIntentService(payments, history, merchantRepo, locker, uow, riskPublisher)
 
 	consumer := kafkainfra.NewRiskResultConsumer(brokers, "core-api-risk-results", service)
 	defer consumer.Close()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,6 +90,18 @@ func (r *inMemoryPaymentIntentRepository) Count(_ context.Context, _ application
 	return int64(len(r.byID)), nil
 }
 
+func (r *inMemoryPaymentIntentRepository) CountRecentByMerchant(_ context.Context, merchantID string, since time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var count int64
+	for _, pi := range r.byID {
+		if pi.MerchantID == merchantID && !pi.CreatedAt.Before(since) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (r *inMemoryPaymentIntentRepository) rowCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -117,6 +130,34 @@ func (r *inMemoryHistoryRepository) ListByPaymentIntentID(_ context.Context, id 
 		}
 	}
 	return out, nil
+}
+
+// fakeMerchantRepository devuelve un comercio ACTIVE por defecto para
+// cualquier id no sembrado explícitamente: a la mayoría de estos tests no
+// les importa el comercio, solo el flujo de PaymentIntent.
+type fakeMerchantRepository struct {
+	mu   sync.Mutex
+	byID map[string]*domain.Merchant
+}
+
+func newFakeMerchantRepository() *fakeMerchantRepository {
+	return &fakeMerchantRepository{byID: make(map[string]*domain.Merchant)}
+}
+
+func (r *fakeMerchantRepository) Create(_ context.Context, m *domain.Merchant) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.byID[m.ID] = m
+	return nil
+}
+
+func (r *fakeMerchantRepository) GetByID(_ context.Context, id string) (*domain.Merchant, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m, ok := r.byID[id]; ok {
+		return m, nil
+	}
+	return &domain.Merchant{ID: id, Status: domain.MerchantStatusActive}, nil
 }
 
 type fakeUnitOfWork struct{}
@@ -149,18 +190,19 @@ func (p *fakeRiskPublisher) publishCount() int {
 	return len(p.events)
 }
 
-func newServiceForTest() (*application.PaymentIntentService, *inMemoryPaymentIntentRepository, *inMemoryHistoryRepository, *fakeRiskPublisher) {
+func newServiceForTest() (*application.PaymentIntentService, *inMemoryPaymentIntentRepository, *inMemoryHistoryRepository, *fakeMerchantRepository, *fakeRiskPublisher) {
 	payments := newInMemoryPaymentIntentRepository()
 	history := &inMemoryHistoryRepository{}
+	merchants := newFakeMerchantRepository()
 	publisher := &fakeRiskPublisher{}
-	svc := application.NewPaymentIntentService(payments, history, fakeLocker{}, fakeUnitOfWork{}, publisher)
-	return svc, payments, history, publisher
+	svc := application.NewPaymentIntentService(payments, history, merchants, fakeLocker{}, fakeUnitOfWork{}, publisher)
+	return svc, payments, history, merchants, publisher
 }
 
 // --- tests ---
 
 func TestCreate_Valid(t *testing.T) {
-	svc, _, history, publisher := newServiceForTest()
+	svc, _, history, _, publisher := newServiceForTest()
 
 	pi, err := svc.Create(context.Background(), "merchant-1", "order-1", 15_000_00, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
 
@@ -174,15 +216,37 @@ func TestCreate_Valid(t *testing.T) {
 	assert.Equal(t, domain.StatusUnderReview, entries[1].NewStatus)
 }
 
+// TestCreate_PublishesMerchantStatusAndRecentIntents cierra el issue #14:
+// el evento de riesgo debe traer el estado del comercio y cuántos intents
+// recientes tiene — sin contarse a sí mismo (ver ADR-0004).
+func TestCreate_PublishesMerchantStatusAndRecentIntents(t *testing.T) {
+	svc, _, _, merchants, publisher := newServiceForTest()
+	ctx := context.Background()
+
+	merchant := &domain.Merchant{ID: "merchant-inactive", Status: domain.MerchantStatusInactive}
+	require.NoError(t, merchants.Create(ctx, merchant))
+
+	_, err := svc.Create(ctx, merchant.ID, "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
+	require.NoError(t, err)
+	_, err = svc.Create(ctx, merchant.ID, "order-2", 1000, "COP", domain.ChannelQR, "idem-2", "", "mova-service")
+	require.NoError(t, err)
+
+	require.Len(t, publisher.events, 2)
+	assert.Equal(t, "INACTIVE", publisher.events[0].MerchantStatus)
+	assert.Equal(t, 0, publisher.events[0].MerchantRecentIntents, "el primer intent del comercio no se cuenta a sí mismo")
+	assert.Equal(t, "INACTIVE", publisher.events[1].MerchantStatus)
+	assert.Equal(t, 1, publisher.events[1].MerchantRecentIntents, "ya existía el primer intent al crear el segundo")
+}
+
 func TestCreate_MissingIdempotencyKey(t *testing.T) {
-	svc, _, _, _ := newServiceForTest()
+	svc, _, _, _, _ := newServiceForTest()
 
 	_, err := svc.Create(context.Background(), "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "", "", "mova-service")
 	assert.ErrorIs(t, err, domain.ErrMissingIdempotencyKey)
 }
 
 func TestCreate_Retry_ReturnsSameIntent_DoesNotPublishAgain(t *testing.T) {
-	svc, payments, _, publisher := newServiceForTest()
+	svc, payments, _, _, publisher := newServiceForTest()
 	ctx := context.Background()
 
 	first, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
@@ -197,7 +261,7 @@ func TestCreate_Retry_ReturnsSameIntent_DoesNotPublishAgain(t *testing.T) {
 }
 
 func TestCreate_Concurrent_OnlyOneRowCreated(t *testing.T) {
-	svc, payments, _, _ := newServiceForTest()
+	svc, payments, _, _, _ := newServiceForTest()
 	const attempts = 20
 	var wg sync.WaitGroup
 	errs := make([]error, attempts)
@@ -218,7 +282,7 @@ func TestCreate_Concurrent_OnlyOneRowCreated(t *testing.T) {
 }
 
 func TestApplyRiskResult_Approve(t *testing.T) {
-	svc, _, history, _ := newServiceForTest()
+	svc, _, history, _, _ := newServiceForTest()
 	ctx := context.Background()
 
 	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
@@ -233,7 +297,7 @@ func TestApplyRiskResult_Approve(t *testing.T) {
 }
 
 func TestApplyRiskResult_Review_StaysUnderReview(t *testing.T) {
-	svc, _, history, _ := newServiceForTest()
+	svc, _, history, _, _ := newServiceForTest()
 	ctx := context.Background()
 
 	pi, err := svc.Create(ctx, "merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "", "mova-service")
@@ -249,19 +313,19 @@ func TestApplyRiskResult_Review_StaysUnderReview(t *testing.T) {
 }
 
 func TestApplyRiskResult_UnknownIntent(t *testing.T) {
-	svc, _, _, _ := newServiceForTest()
+	svc, _, _, _, _ := newServiceForTest()
 	_, err := svc.ApplyRiskResult(context.Background(), "no-existe", domain.RiskApprove, 10, nil, "rules-v1", "risk-service")
 	assert.ErrorIs(t, err, application.ErrNotFound)
 }
 
 func TestGet_NotFound(t *testing.T) {
-	svc, _, _, _ := newServiceForTest()
+	svc, _, _, _, _ := newServiceForTest()
 	_, err := svc.Get(context.Background(), "no-existe")
 	assert.ErrorIs(t, err, application.ErrNotFound)
 }
 
 func TestHistory_NotFound(t *testing.T) {
-	svc, _, _, _ := newServiceForTest()
+	svc, _, _, _, _ := newServiceForTest()
 	_, err := svc.History(context.Background(), "no-existe")
 	assert.ErrorIs(t, err, application.ErrNotFound)
 }

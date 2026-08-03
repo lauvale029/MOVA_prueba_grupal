@@ -3,6 +3,7 @@ package http_test
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -130,6 +131,18 @@ func (r *fakePaymentIntentRepository) Count(_ context.Context, filter applicatio
 	return int64(len(r.filtered(filter))), nil
 }
 
+func (r *fakePaymentIntentRepository) CountRecentByMerchant(_ context.Context, merchantID string, since time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var count int64
+	for _, pi := range r.byID {
+		if pi.MerchantID == merchantID && !pi.CreatedAt.Before(since) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // filtered asume el lock ya tomado por quien llama.
 func (r *fakePaymentIntentRepository) filtered(filter application.PaymentIntentFilter) []*domain.PaymentIntent {
 	items := make([]*domain.PaymentIntent, 0, len(r.byID))
@@ -188,9 +201,14 @@ type testApp struct {
 func setupApp() *testApp {
 	payments := newFakePaymentIntentRepository()
 	history := &fakeHistoryRepository{}
-	service := application.NewPaymentIntentService(payments, history, noopLocker{}, fakeUnitOfWork{}, noopPublisher{})
-
 	merchants := newFakeMerchantRepository()
+	// Comercios que ya asumen los tests de payment intents (merchant_id
+	// fijo en el body/query) — desde que Create valida que el comercio
+	// exista, hace falta sembrarlos.
+	_ = merchants.Create(context.Background(), &domain.Merchant{ID: "merchant-1", DocumentNumber: "seed-1", Status: domain.MerchantStatusActive})
+	_ = merchants.Create(context.Background(), &domain.Merchant{ID: "merchant-2", DocumentNumber: "seed-2", Status: domain.MerchantStatusActive})
+	service := application.NewPaymentIntentService(payments, history, merchants, noopLocker{}, fakeUnitOfWork{}, noopPublisher{})
+
 	merchantService := application.NewMerchantService(merchants)
 
 	tokens := auth.NewTokenService("test-secret", 60)

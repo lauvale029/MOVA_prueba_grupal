@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -119,6 +120,18 @@ func (r *PaymentIntentRepository) Count(ctx context.Context, filter application.
 
 	var total int64
 	err := db.QueryRow(ctx, `SELECT count(*) FROM payments.payment_intents`+where, args...).Scan(&total)
+	return total, err
+}
+
+// CountRecentByMerchant usa ix_intents_merchant_recent (migración 0002),
+// pensado justo para esta consulta.
+func (r *PaymentIntentRepository) CountRecentByMerchant(ctx context.Context, merchantID string, since time.Time) (int64, error) {
+	db := dbFromContext(ctx, r.pool)
+	var total int64
+	err := db.QueryRow(ctx, `
+		SELECT count(*) FROM payments.payment_intents
+		WHERE merchant_id = $1 AND created_at >= $2
+	`, merchantID, since).Scan(&total)
 	return total, err
 }
 
