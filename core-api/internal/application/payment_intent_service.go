@@ -10,6 +10,12 @@ import (
 
 const idempotencyRetryDelay = 50 * time.Millisecond
 
+// velocityWindow es la ventana de "reciente" para merchant_recent_intents
+// (ver ADR-0004) — mismo valor por defecto que usa risk-service
+// (velocity_window_seconds), para que el número signifique lo mismo de
+// los dos lados el día que lo empiece a consumir.
+const velocityWindow = 60 * time.Second
+
 const (
 	DefaultPage  = 1
 	DefaultLimit = 100
@@ -25,6 +31,7 @@ const (
 type PaymentIntentService struct {
 	payments  PaymentIntentRepository
 	history   PaymentIntentStatusHistoryRepository
+	merchants MerchantRepository
 	locker    IdempotencyLocker
 	uow       UnitOfWork
 	riskEvent RiskRequestPublisher
@@ -33,6 +40,7 @@ type PaymentIntentService struct {
 func NewPaymentIntentService(
 	payments PaymentIntentRepository,
 	history PaymentIntentStatusHistoryRepository,
+	merchants MerchantRepository,
 	locker IdempotencyLocker,
 	uow UnitOfWork,
 	riskEvent RiskRequestPublisher,
@@ -40,6 +48,7 @@ func NewPaymentIntentService(
 	return &PaymentIntentService{
 		payments:  payments,
 		history:   history,
+		merchants: merchants,
 		locker:    locker,
 		uow:       uow,
 		riskEvent: riskEvent,
@@ -86,6 +95,19 @@ func (s *PaymentIntentService) Create(
 		return nil, err
 	}
 
+	merchant, err := s.merchants.GetByID(ctx, merchantID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Se cuenta ANTES de persistir el intent actual: si no, el intent se
+	// contaría a sí mismo y el umbral de velocidad quedaría corrido en uno
+	// (ver ADR-0004).
+	recentIntents, err := s.payments.CountRecentByMerchant(ctx, merchantID, time.Now().UTC().Add(-velocityWindow))
+	if err != nil {
+		return nil, err
+	}
+
 	err = s.uow.Execute(ctx, func(txCtx context.Context) error {
 		if err := s.payments.Create(txCtx, pi); err != nil {
 			return err
@@ -118,13 +140,15 @@ func (s *PaymentIntentService) Create(
 	// Kafka falla acá, el intent ya quedó en UNDER_REVIEW; el circuit
 	// breaker (pendiente, ver README) se encargará de la resiliencia.
 	_ = s.riskEvent.Publish(ctx, RiskEvaluationRequested{
-		PaymentIntentID:   pi.ID,
-		MerchantID:        pi.MerchantID,
-		ExternalReference: pi.ExternalReference,
-		AmountMinor:       pi.AmountMinor,
-		Currency:          pi.Currency,
-		Channel:           string(pi.Channel),
-		CorrelationID:     pi.CorrelationID,
+		PaymentIntentID:       pi.ID,
+		MerchantID:            pi.MerchantID,
+		ExternalReference:     pi.ExternalReference,
+		AmountMinor:           pi.AmountMinor,
+		Currency:              pi.Currency,
+		Channel:               string(pi.Channel),
+		CorrelationID:         pi.CorrelationID,
+		MerchantStatus:        string(merchant.Status),
+		MerchantRecentIntents: int(recentIntents),
 	})
 
 	return pi, nil

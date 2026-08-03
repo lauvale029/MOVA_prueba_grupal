@@ -5,17 +5,18 @@ package kafka_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/application"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/domain"
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/kafka"
-	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/infrastructure/memory"
 )
 
 var brokers = []string{"localhost:9092"}
@@ -39,6 +40,7 @@ func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
 		PaymentIntentID: expectedID, MerchantID: "merchant-1",
 		ExternalReference: "order-1", AmountMinor: 15000000,
 		Currency: "COP", Channel: "QR", CorrelationID: "corr-1",
+		MerchantStatus: "ACTIVE", MerchantRecentIntents: 3,
 	}
 	require.NoError(t, publisher.Publish(context.Background(), event))
 
@@ -65,6 +67,9 @@ func TestRiskRequestPublisher_PublishesToTopic(t *testing.T) {
 			break
 		}
 	}
+
+	assert.Equal(t, "ACTIVE", got["merchant_status"])
+	assert.Equal(t, float64(3), got["merchant_recent_intents"])
 }
 
 type noopLocker struct{}
@@ -77,10 +82,100 @@ func (noopPublisher) Publish(_ context.Context, _ application.RiskEvaluationRequ
 	return nil
 }
 
+// fakePaymentIntentRepository e fakeHistoryRepository son solo para probar
+// el consumer contra Kafka real sin depender de Postgres (ver
+// internal/infrastructure/postgres para la implementación real).
+type fakePaymentIntentRepository struct {
+	mu   sync.Mutex
+	byID map[string]*domain.PaymentIntent
+}
+
+func (r *fakePaymentIntentRepository) Create(_ context.Context, pi *domain.PaymentIntent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byID == nil {
+		r.byID = make(map[string]*domain.PaymentIntent)
+	}
+	cp := *pi
+	r.byID[pi.ID] = &cp
+	return nil
+}
+
+func (r *fakePaymentIntentRepository) GetByID(_ context.Context, id string) (*domain.PaymentIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pi, ok := r.byID[id]
+	if !ok {
+		return nil, application.ErrNotFound
+	}
+	cp := *pi
+	return &cp, nil
+}
+
+func (r *fakePaymentIntentRepository) GetByIdempotencyKey(_ context.Context, key string) (*domain.PaymentIntent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, pi := range r.byID {
+		if pi.IdempotencyKey == key {
+			cp := *pi
+			return &cp, nil
+		}
+	}
+	return nil, application.ErrNotFound
+}
+
+func (r *fakePaymentIntentRepository) Update(_ context.Context, pi *domain.PaymentIntent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[pi.ID]; !ok {
+		return application.ErrNotFound
+	}
+	cp := *pi
+	r.byID[pi.ID] = &cp
+	return nil
+}
+
+func (r *fakePaymentIntentRepository) List(_ context.Context, _ application.PaymentIntentFilter) ([]*domain.PaymentIntent, error) {
+	return nil, nil
+}
+
+func (r *fakePaymentIntentRepository) Count(_ context.Context, _ application.PaymentIntentFilter) (int64, error) {
+	return 0, nil
+}
+
+func (r *fakePaymentIntentRepository) CountRecentByMerchant(_ context.Context, _ string, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
+type fakeMerchantRepository struct{}
+
+func (fakeMerchantRepository) Create(_ context.Context, _ *domain.Merchant) error { return nil }
+
+func (fakeMerchantRepository) GetByID(_ context.Context, id string) (*domain.Merchant, error) {
+	return &domain.Merchant{ID: id, Status: domain.MerchantStatusActive}, nil
+}
+
+type fakeHistoryRepository struct{}
+
+func (fakeHistoryRepository) Create(_ context.Context, _ *domain.PaymentIntentStatusHistory) error {
+	return nil
+}
+
+func (fakeHistoryRepository) ListByPaymentIntentID(_ context.Context, _ string) ([]*domain.PaymentIntentStatusHistory, error) {
+	return nil, nil
+}
+
+type fakeUnitOfWork struct{}
+
+func (fakeUnitOfWork) Execute(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 func TestRiskResultConsumer_AppliesResultFromKafka(t *testing.T) {
-	payments := memory.NewPaymentIntentRepository()
-	history := memory.NewPaymentIntentStatusHistoryRepository()
-	service := application.NewPaymentIntentService(payments, history, noopLocker{}, memory.UnitOfWork{}, noopPublisher{})
+	payments := &fakePaymentIntentRepository{}
+	history := fakeHistoryRepository{}
+	merchants := fakeMerchantRepository{}
+	service := application.NewPaymentIntentService(payments, history, merchants, noopLocker{}, fakeUnitOfWork{}, noopPublisher{})
 
 	pi, err := domain.NewPaymentIntent("merchant-1", "order-1", 1000, "COP", domain.ChannelQR, "idem-1", "")
 	require.NoError(t, err)

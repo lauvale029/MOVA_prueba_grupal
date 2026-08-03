@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/lauvale029/MOVA_prueba_grupal/core-api/internal/domain"
 )
@@ -26,6 +27,10 @@ type PaymentIntentRepository interface {
 	Update(ctx context.Context, pi *domain.PaymentIntent) error
 	List(ctx context.Context, filter PaymentIntentFilter) ([]*domain.PaymentIntent, error)
 	Count(ctx context.Context, filter PaymentIntentFilter) (int64, error)
+	// CountRecentByMerchant cuenta los intents de ese comercio creados desde
+	// "since". Alimenta merchant_recent_intents (ver ADR-0004) — se consulta
+	// ANTES de crear el intent actual, para que no se cuente a sí mismo.
+	CountRecentByMerchant(ctx context.Context, merchantID string, since time.Time) (int64, error)
 }
 
 type PaymentIntentStatusHistoryRepository interface {
@@ -47,14 +52,18 @@ type IdempotencyLocker interface {
 
 // RiskEvaluationRequested es el evento que se publica a Kafka para que el
 // Risk Service evalúe un PaymentIntent (ver ADR-0001, contrato Go/Python).
+// MerchantStatus y MerchantRecentIntents son opcionales (ver ADR-0004):
+// core-api es dueño de ambos datos, pero risk-service todavía los ignora.
 type RiskEvaluationRequested struct {
-	PaymentIntentID   string
-	MerchantID        string
-	ExternalReference string
-	AmountMinor       int64
-	Currency          string
-	Channel           string
-	CorrelationID     string
+	PaymentIntentID       string
+	MerchantID            string
+	ExternalReference     string
+	AmountMinor           int64
+	Currency              string
+	Channel               string
+	CorrelationID         string
+	MerchantStatus        string
+	MerchantRecentIntents int
 }
 
 // RiskRequestPublisher publica el evento de evaluación de riesgo. No

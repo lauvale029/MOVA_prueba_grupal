@@ -14,13 +14,15 @@ import (
 const TopicRiskEvaluationRequested = "risk.evaluation.requested"
 
 type riskRequestedMessage struct {
-	PaymentIntentID   string `json:"payment_intent_id"`
-	MerchantID        string `json:"merchant_id"`
-	ExternalReference string `json:"external_reference"`
-	AmountMinor       int64  `json:"amount_minor"`
-	Currency          string `json:"currency"`
-	Channel           string `json:"channel"`
-	CorrelationID     string `json:"correlation_id"`
+	PaymentIntentID       string `json:"payment_intent_id"`
+	MerchantID            string `json:"merchant_id"`
+	ExternalReference     string `json:"external_reference"`
+	AmountMinor           int64  `json:"amount_minor"`
+	Currency              string `json:"currency"`
+	Channel               string `json:"channel"`
+	CorrelationID         string `json:"correlation_id"`
+	MerchantStatus        string `json:"merchant_status"`
+	MerchantRecentIntents int    `json:"merchant_recent_intents"`
 }
 
 // RiskRequestPublisher implementa application.RiskRequestPublisher
@@ -45,13 +47,15 @@ var _ application.RiskRequestPublisher = (*RiskRequestPublisher)(nil)
 
 func (p *RiskRequestPublisher) Publish(ctx context.Context, event application.RiskEvaluationRequested) error {
 	payload, err := json.Marshal(riskRequestedMessage{
-		PaymentIntentID:   event.PaymentIntentID,
-		MerchantID:        event.MerchantID,
-		ExternalReference: event.ExternalReference,
-		AmountMinor:       event.AmountMinor,
-		Currency:          event.Currency,
-		Channel:           event.Channel,
-		CorrelationID:     event.CorrelationID,
+		PaymentIntentID:       event.PaymentIntentID,
+		MerchantID:            event.MerchantID,
+		ExternalReference:     event.ExternalReference,
+		AmountMinor:           event.AmountMinor,
+		Currency:              event.Currency,
+		Channel:               event.Channel,
+		CorrelationID:         event.CorrelationID,
+		MerchantStatus:        event.MerchantStatus,
+		MerchantRecentIntents: event.MerchantRecentIntents,
 	})
 	if err != nil {
 		return err
